@@ -20,6 +20,9 @@ import {
   CalendarOutlined,
 } from "@ant-design/icons";
 import employerService from "../../services/employerService";
+import cvService from "../../services/cvService";
+import CVPreview from "../CV/CVPreview";
+import { sanitizeHtml } from "../../utils/sanitizeHtml";
 import "./ApplicationCard.css";
 
 const STATUS_CONFIG = {
@@ -32,41 +35,14 @@ const STATUS_CONFIG = {
 
 const { TextArea } = Input;
 
-const getEntityId = (entity) => {
-  if (!entity) return null;
-  if (typeof entity !== "object") return entity;
-  return entity._id || entity.id || entity.userId || null;
-};
-
-const getApplicationJobId = (application) =>
-  getEntityId(application.job) ||
-  getEntityId(application.jobId) ||
-  application.job?._id ||
-  application.job?.id ||
-  null;
-
-const getApplicationCandidateId = (application) =>
-  getEntityId(application.candidate) ||
-  getEntityId(application.candidateId) ||
-  getEntityId(application.candidate?.user) ||
-  getEntityId(application.user) ||
-  null;
-
-const persistApplicationStatus = ({ jobId, candidateId, status }) => {
-  if (!jobId || !status) return;
-
-  const entries = [[`applicationStatus:${jobId}`, status]];
-  if (candidateId) {
-    entries.push([`applicationStatus:${candidateId}:${jobId}`, status]);
-  }
-
-  entries.forEach(([key, value]) => localStorage.setItem(key, value));
-};
-
-const ApplicationCard = ({ application, onStatusChange }) => {
+const ApplicationCard = ({ application, onStatusChange, highlighted = false }) => {
   const { candidate, status, appliedAt, coverLetter, note } = application;
   const appId = application.id || application._id;
   const [viewModalOpen, setViewModalOpen] = useState(false);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null);
+  React.useEffect(() => () => {
+    if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
+  }, [pdfPreviewUrl]);
   const [updating, setUpdating] = useState(false);
   const [noteModalOpen, setNoteModalOpen] = useState(false);
   const [noteText, setNoteText] = useState(note || "");
@@ -95,59 +71,9 @@ const ApplicationCard = ({ application, onStatusChange }) => {
       setLocalStatus(resStatus);
       setCurrentNote(resNote);
       onStatusChange?.(appId, resStatus, resNote);
-      // persist and emit event
-      try {
-        const jobId = getApplicationJobId(application);
-        const candidateId = getApplicationCandidateId(application);
 
-        persistApplicationStatus({ jobId, candidateId, status: resStatus });
-
-        const detail = {
-          appId,
-          jobId,
-          status: resStatus,
-          note: resNote,
-          candidateId,
-        };
-
-        // ensure cross-tab propagation via localStorage for various key shapes
-        try {
-          if (jobId) {
-            localStorage.setItem(`applicationStatus:${jobId}`, resStatus);
-            localStorage.setItem(`applicationNote:${jobId}`, resNote);
-          }
-          if (candidateId && jobId) {
-            localStorage.setItem(
-              `applicationStatus:${candidateId}:${jobId}`,
-              resStatus,
-            );
-            localStorage.setItem(
-              `applicationNote:${candidateId}:${jobId}`,
-              resNote,
-            );
-          }
-          if (candidateId) {
-            localStorage.setItem(
-              `applicationStatus:${candidateId}:${appId}`,
-              resStatus,
-            );
-            localStorage.setItem(
-              `applicationNote:${candidateId}:${appId}`,
-              resNote,
-            );
-          }
-        } catch (e) {
-          // ignore storage errors
-        }
-
-        window.dispatchEvent(
-          new CustomEvent("applicationStatusChanged", { detail }),
-        );
-      } catch (e) {
-        // ignore
-      }
     } catch (err) {
-      message.error("Có lỗi xảy ra");
+      message.error(err.message || "Có lỗi xảy ra");
     } finally {
       setUpdating(false);
     }
@@ -155,35 +81,22 @@ const ApplicationCard = ({ application, onStatusChange }) => {
 
   const handleSaveNote = async () => {
     try {
-      const res = await employerService.updateApplicationStatus(
+      const res = await employerService.updateApplicationNote(
         appId,
-        localStatus,
         noteText,
       );
       const resNote = res?.note ?? noteText ?? "";
       setCurrentNote(resNote);
-      onStatusChange?.(appId, localStatus, resNote);
-      const jobId = getApplicationJobId(application);
-      const candidateId = getApplicationCandidateId(application);
-      window.dispatchEvent(
-        new CustomEvent("applicationStatusChanged", {
-          detail: {
-            appId,
-            jobId,
-            status: localStatus,
-            note: resNote,
-            candidateId,
-          },
-        }),
-      );
+      setLocalStatus(res.status);
+      onStatusChange?.(appId, res.status, resNote);
       message.success("Đã lưu ghi chú");
       setNoteModalOpen(false);
     } catch (err) {
-      message.error("Có lỗi khi lưu ghi chú");
+      message.error(err.message || "Có lỗi khi lưu ghi chú");
     }
   };
 
-  const handleDownloadCv = () => {
+  const handleDownloadCv = async () => {
     const cvUrl =
       application.cvUrl?.trim() || application.cv?.pdfUrl?.trim() || null;
 
@@ -191,10 +104,20 @@ const ApplicationCard = ({ application, onStatusChange }) => {
       message.warning("Ứng viên chưa gửi CV hoặc chưa có file đính kèm.");
       return;
     }
-    window.open(cvUrl, "_blank", "noopener,noreferrer");
+    try {
+      const blob = await cvService.getPrivateFile(cvUrl);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = new URL(cvUrl, window.location.origin).pathname.split("/").pop();
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (error) {
+      message.error(error.message || "Không thể tải CV");
+    }
   };
 
-  const handleViewCv = () => {
+  const handleViewCv = async () => {
     // Nếu là CV online, show snapshot modal
     if (application.cv && application.cv.type === "online") {
       setViewModalOpen(true);
@@ -205,7 +128,14 @@ const ApplicationCard = ({ application, onStatusChange }) => {
     const cvUrl =
       application.cvUrl?.trim() || application.cv?.pdfUrl?.trim() || null;
     if (cvUrl) {
-      window.open(cvUrl, "_blank", "noopener,noreferrer");
+      try {
+        const blob = await cvService.getPrivateFile(cvUrl);
+        if (!blob.type.includes("pdf")) return handleDownloadCv();
+        setPdfPreviewUrl(URL.createObjectURL(blob));
+        setViewModalOpen(true);
+      } catch (error) {
+        message.error(error.message || "Không thể xem CV");
+      }
       return;
     }
 
@@ -247,7 +177,7 @@ const ApplicationCard = ({ application, onStatusChange }) => {
 
   return (
     <>
-      <div className="application-card">
+      <div id={`application-${appId}`} className="application-card" style={highlighted ? { outline: "2px solid #00b14f", scrollMarginTop: 90 } : undefined}>
         {/* Status badge */}
         <div
           className="application-card__status"
@@ -418,19 +348,13 @@ const ApplicationCard = ({ application, onStatusChange }) => {
       >
         <div style={{ minHeight: 400 }}>
           {application.cv && application.cv.type === "online" ? (
-            <div
-              className="cv-viewer"
-              dangerouslySetInnerHTML={{
-                __html:
-                  typeof application.cv.onlineSnapshot === "string"
-                    ? application.cv.onlineSnapshot
-                    : JSON.stringify(
-                        application.cv.onlineSnapshot || {},
-                        null,
-                        2,
-                      ),
-              }}
-            />
+            typeof application.cv.onlineSnapshot === "string" ? (
+              <div className="cv-viewer" dangerouslySetInnerHTML={{ __html: sanitizeHtml(application.cv.onlineSnapshot) }} />
+            ) : (
+              <CVPreview data={application.cv.onlineSnapshot?.data || application.cv.onlineSnapshot || {}} template={application.cv.onlineSnapshot?.template} />
+            )
+          ) : pdfPreviewUrl ? (
+            <iframe title="Xem hồ sơ ứng tuyển" src={pdfPreviewUrl} style={{ width: "100%", height: "70vh", border: 0 }} />
           ) : (
             <div style={{ textAlign: "center", padding: 40 }}>
               <p>Không có bản xem trực tuyến. Mở file PDF nếu có.</p>

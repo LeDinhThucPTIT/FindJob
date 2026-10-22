@@ -26,6 +26,8 @@ const employerService = {
       status,
       note,
     }),
+  updateApplicationNote: async (appId, note) =>
+    await apiClient.patch(`/employer/applications/${appId}/status`, { note }),
 
   // Hồ sơ công ty
   getCompanyProfile: async () => await apiClient.get("/employer/profile"),

@@ -2,46 +2,20 @@
 // middleware/authMiddleware.js
 // ===========================
 
-const jwt = require("jsonwebtoken");
+const { validateSession } = require("../services/sessions");
+const isTokenError = (error) => ["JsonWebTokenError", "TokenExpiredError", "NotBeforeError"].includes(error.name);
 
-// Middleware kiểm tra Token hợp lệ
-// Áp dụng cho MỌI API yêu cầu đăng nhập
-
-exports.verifyToken = (req, res, next) => {
-  // Lấy token từ header Authorization. Định dạng chuẩn: "Bearer <token>"
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({
-      success: false,
-      message: "Truy cập bị từ chối. Vui lòng đăng nhập!",
-    });
-  }
-
-  const token = authHeader.split(" ")[1];
-
+exports.verifyToken = async (req, res, next) => {
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Bearer ")) return res.status(401).json({ message: "Vui lòng đăng nhập để tiếp tục." });
   try {
-    // Giải mã token bằng Secret Key
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "topcv_secret_key_2026_default",
-    );
-
-    // Gắn thông tin giải mã được (chứa id và role) vào request để các Controller dùng
-    req.user = decoded;
-
-    // Cho phép đi tiếp vào Controller
+    const user = await validateSession(header.slice(7));
+    if (!user) return res.status(401).json({ message: "Phiên đăng nhập đã hết hiệu lực. Vui lòng đăng nhập lại." });
+    req.user = user;
     next();
   } catch (error) {
-    if (error.name === "TokenExpiredError") {
-      return res.status(401).json({
-        success: false,
-        message: "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.",
-      });
-    }
-    return res
-      .status(401)
-      .json({ success: false, message: "Token không hợp lệ." });
+    if (isTokenError(error)) return res.status(401).json({ message: "Phiên đăng nhập không hợp lệ hoặc đã hết hạn." });
+    next(error);
   }
 };
 
@@ -59,24 +33,17 @@ exports.isEmployer = (req, res, next) => {
   next();
 };
 
-exports.optionalAuth = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return next();
-  }
-
-  const token = authHeader.split(" ")[1];
+exports.optionalAuth = async (req, res, next) => {
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Bearer ")) return next();
   try {
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "topcv_secret_key_2026_default",
-    );
-    req.user = decoded;
+    const user = await validateSession(header.slice(7));
+    if (user) req.user = user;
+    next();
   } catch (error) {
-    // Nếu token không hợp lệ thì bỏ qua, vì đây chỉ là route public
+    if (isTokenError(error)) return next();
+    next(error);
   }
-
-  next();
 };
 
 //Middleware phân quyền: Dành riêng cho Ứng viên (Candidate)

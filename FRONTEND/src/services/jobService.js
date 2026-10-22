@@ -10,17 +10,19 @@ const jobService = {
    * Lấy danh sách việc làm (Backend đã lo việc filter và phân trang)
    * @param {Object} params - { keyword, location, category, salary, experience, page, limit }
    */
-  getJobs: async (params = {}) => {
+  getJobs: async (params = {}, signal) => {
     // Axios sẽ tự động nối params thành chuỗi query: /jobs?keyword=react&page=1...
-    return await apiClient.get("/jobs", { params });
+    return await apiClient.get("/jobs", { params, signal });
   },
 
   /**
    * Lấy chi tiết 1 việc làm theo ID
    */
-  getJobById: async (id) => {
-    return await apiClient.get(`/jobs/${id}`);
+  getJobById: async (id, signal) => {
+    return await apiClient.get(`/jobs/${id}`, { signal });
   },
+  getOverview: async () => apiClient.get("/jobs/overview"),
+  getMyApplication: async (id, signal) => apiClient.get(`/jobs/${id}/application`, { signal }),
 
   /**
    * Lấy việc làm nổi bật (hot jobs)
@@ -68,27 +70,6 @@ const jobService = {
       }
     }
 
-    try {
-      if (
-        typeof window !== "undefined" &&
-        window.console &&
-        window.console.debug
-      ) {
-        const entries = [];
-        for (const pair of formData.entries()) {
-          const [k, v] = pair;
-          if (v instanceof File) {
-            entries.push(`${k} => File(${v.name}, ${v.type}, ${v.size})`);
-          } else {
-            entries.push(`${k} => ${String(v)}`);
-          }
-        }
-        console.debug("applyJob FormData:", entries.join(" | "));
-      }
-    } catch (e) {
-      // ignore logging errors
-    }
-
     return await apiClient.post(`/jobs/${jobId}/apply`, formData, {
       headers: {
         "Content-Type": "multipart/form-data",
@@ -98,8 +79,8 @@ const jobService = {
   /**
    * Lưu việc làm yêu thích (Toggle: Lưu/Bỏ lưu)
    */
-  saveJob: async (jobId) => {
-    return await apiClient.post(`/jobs/${jobId}/save`);
+  saveJob: async (jobId, saved) => {
+    return await apiClient.post(`/jobs/${jobId}/save`, { saved });
   },
 };
 

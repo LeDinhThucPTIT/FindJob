@@ -141,12 +141,12 @@ const RegisterPage = () => {
           label="Mật khẩu"
           rules={[
             { required: true, message: "Vui lòng nhập mật khẩu" },
-            { min: 6, message: "Mật khẩu phải từ 6 ký tự" },
+            { min: 8, max: 128, message: "Mật khẩu phải có 8–128 ký tự" },
           ]}
         >
           <Input.Password
             prefix={<LockOutlined className="auth-input-icon" />}
-            placeholder="Tối thiểu 6 ký tự"
+            placeholder="Tối thiểu 8 ký tự"
             size="large"
             className="auth-input"
           />

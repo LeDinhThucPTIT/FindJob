@@ -18,8 +18,6 @@ const apiClient = axios.create({
 apiClient.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem("token");
-    console.log("Đang gửi request tới:", config.url);
-    console.log("Token lấy được từ localStorage:", token ? "CÓ TOKEN" : "NULL");
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -31,13 +29,23 @@ apiClient.interceptors.request.use(
 // Response interceptor: xử lý lỗi toàn cục
 apiClient.interceptors.response.use(
   (response) => response.data,
-  (error) => {
-    if (error.response?.status === 401) {
+  async (error) => {
+    const publicAuth = ["/auth/login", "/auth/register", "/auth/google", "/auth/send-otp", "/auth/reset-password", "/auth/logout"].includes(error.config?.url);
+    const currentToken = localStorage.getItem("token");
+    const sentAuthorization = error.config?.headers?.Authorization;
+    const currentRequest = currentToken ? sentAuthorization === `Bearer ${currentToken}` : !sentAuthorization;
+    if (error.response?.status === 401 && !publicAuth && currentRequest) {
       localStorage.removeItem("token");
       localStorage.removeItem("user");
+      window.dispatchEvent(new Event("auth:expired"));
       window.location.href = "/login";
     }
-    return Promise.reject(error.response?.data || error);
+    let data = error.response?.data;
+    if (data instanceof Blob && data.type.includes("json")) {
+      try { data = JSON.parse(await data.text()); } catch { /* Keep the original error. */ }
+    }
+    if (data && typeof data === "object" && !(data instanceof Blob)) return Promise.reject({ ...data, status: error.response.status });
+    return Promise.reject(data || error);
   },
 );
 

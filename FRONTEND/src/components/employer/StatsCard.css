@@ -73,3 +73,9 @@
 }
 .stats-card__trend.up   { background: #e6f9ee; color: var(--color-primary); }
 .stats-card__trend.down { background: #fef2f2; color: #ef4444; }
+
+@media (max-width: 575px) {
+  .stats-card { padding: 16px 12px; gap: 10px; align-items: flex-start; height: 100%; }
+  .stats-card__icon-wrap { width: 32px; height: 32px; font-size: 18px; border-radius: 10px; }
+  .stats-card__value { font-size: 24px; }
+}

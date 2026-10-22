@@ -3,6 +3,14 @@ const Application = require("../models/Application");
 const User = require("../models/User");
 const Employer = require("../models/Employer");
 const fs = require("fs/promises");
+const mongoose = require("mongoose");
+const { openJobsFilter, withApplicationCounts } = require("../services/recruitmentData");
+const { pick, JOB_FIELDS, escapeRegex, positiveInteger } = require("../utils/input");
+
+const removeRequestFiles = async (req) => {
+  const files = [req.file, ...Object.values(req.files || {}).flat()].filter(Boolean);
+  await Promise.all(files.map(removeUploadedFile));
+};
 
 const removeUploadedFile = async (file) => {
   if (!file?.path) return;
@@ -17,6 +25,17 @@ const removeUploadedFile = async (file) => {
 };
 
 const jobController = {
+  getMyApplication: async (req, res, next) => {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: "ID việc làm không hợp lệ" });
+      const application = await Application.findOne({ job: req.params.id, candidate: req.user.id })
+        .select("status createdAt updatedAt").lean();
+      res.json({ isApplied: Boolean(application), application: application ? {
+        id: application._id, status: application.status,
+        appliedAt: application.createdAt, updatedAt: application.updatedAt,
+      } : null });
+    } catch (error) { next(error); }
+  },
   // 1. Lấy danh sách việc làm (Có filter & phân trang)
   getJobs: async (req, res) => {
     try {
@@ -26,15 +45,17 @@ const jobController = {
         category,
         experience,
         salary,
+        jobType,
+        sort = "newest",
         page = 1,
         limit = 6,
       } = req.query;
 
-      let query = { status: "active" };
+      let query = { status: "active", $and: [{ $or: openJobsFilter().$or }] };
 
       // Lọc theo keyword (tìm trong title, tên công ty, hoặc kỹ năng)
       if (keyword) {
-        const regex = new RegExp(keyword, "i");
+        const regex = new RegExp(escapeRegex(keyword), "i");
         query.$or = [
           { title: regex },
           { "companySnapshot.companyName": regex },
@@ -43,9 +64,10 @@ const jobController = {
       }
 
       if (location && location !== "all")
-        query.location = new RegExp(location, "i");
+        query.location = new RegExp(escapeRegex(location), "i");
       if (category && category !== "all") query.category = category;
       if (experience && experience !== "all") query.experience = experience;
+      if (jobType && jobType !== "all") query.jobType = jobType;
 
       // Lọc theo lương (Đầu vào VD: "15000000-25000000" hoặc "30000000-")
       if (salary && salary !== "all") {
@@ -62,11 +84,16 @@ const jobController = {
         }
       }
 
-      const skip = (Number(page) - 1) * Number(limit);
+      const pageNumber = positiveInteger(page, 1, 100000);
+      const limitNumber = positiveInteger(limit, 6);
+      const skip = (pageNumber - 1) * limitNumber;
+      const ordering = sort === "salary_desc" ? { "salary.max": -1, "salary.min": -1, _id: -1 }
+        : sort === "hot" ? { views: -1, createdAt: -1, _id: -1 }
+        : { createdAt: -1, _id: -1 };
       const jobs = await Job.find(query)
-        .sort({ createdAt: -1 })
+        .sort(ordering)
         .skip(skip)
-        .limit(Number(limit));
+        .limit(limitNumber);
       const total = await Job.countDocuments(query);
 
       let appliedJobIds = new Set();
@@ -74,7 +101,7 @@ const jobController = {
 
       if (req.user?.role === "candidate") {
         const user = await User.findById(req.user.id).select(
-          "appliedJobs savedJobs",
+          "savedJobs",
         );
         if (user) {
           savedJobIds = new Set(
@@ -94,8 +121,9 @@ const jobController = {
         );
       }
 
-      const jobsWithFlags = jobs.map((job) => ({
-        ...job.toObject(),
+      const countedJobs = await withApplicationCounts(jobs);
+      const jobsWithFlags = countedJobs.map((job) => ({
+        ...job,
         isApplied: appliedJobIds.has(job._id.toString()),
         isSaved: savedJobIds.has(job._id.toString()),
       }));
@@ -103,9 +131,9 @@ const jobController = {
       res.status(200).json({
         data: jobsWithFlags,
         total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit)),
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.ceil(total / limitNumber),
       });
     } catch (error) {
       res.status(500).json({
@@ -118,11 +146,11 @@ const jobController = {
   // 2. Lấy việc làm nổi bật (Hot Jobs)
   getHotJobs: async (req, res) => {
     try {
-      const limit = Number(req.query.limit) || 6;
-      const jobs = await Job.find({ status: "active", hot: true })
+      const limit = positiveInteger(req.query.limit, 6);
+      const jobs = await Job.find({ ...openJobsFilter(), hot: true })
         .sort({ createdAt: -1 })
         .limit(limit);
-      res.status(200).json(jobs);
+      res.status(200).json(await withApplicationCounts(jobs));
     } catch (error) {
       res.status(500).json({ message: "Lỗi server", error: error.message });
     }
@@ -131,12 +159,12 @@ const jobController = {
   // 3. Lấy việc làm gợi ý
   getRecommendedJobs: async (req, res) => {
     try {
-      const limit = Number(req.query.limit) || 4;
+      const limit = positiveInteger(req.query.limit, 4);
       // Tạm thời lấy các job mới nhất. Sau này có thể viết thuật toán gợi ý theo User Skills
-      const jobs = await Job.find({ status: "active" })
+      const jobs = await Job.find(openJobsFilter())
         .sort({ views: -1, createdAt: -1 })
         .limit(limit);
-      res.status(200).json(jobs);
+      res.status(200).json(await withApplicationCounts(jobs));
     } catch (error) {
       res.status(500).json({ message: "Lỗi server", error: error.message });
     }
@@ -145,8 +173,10 @@ const jobController = {
   // 4. Lấy chi tiết 1 việc làm
   getJobById: async (req, res) => {
     try {
-      const job = await Job.findByIdAndUpdate(
-        req.params.id,
+      if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: "ID việc làm không hợp lệ" });
+      const previouslyApplied = req.user?.role === "candidate" && await Application.exists({ job: req.params.id, candidate: req.user.id });
+      const job = await Job.findOneAndUpdate(
+        { _id: req.params.id, ...(req.user?.role === "employer" ? { $or: [{ status: "active" }, { employerId: req.user.id }] } : previouslyApplied ? {} : { status: "active" }) },
         { $inc: { views: 1 } },
         { new: true },
       );
@@ -155,13 +185,9 @@ const jobController = {
         return res.status(404).json({ message: "Không tìm thấy việc làm" });
       }
 
-      const jobData = job.toObject();
+      const [jobData] = await withApplicationCounts([job]);
 
       // 1. In log ra để "bắt tận tay" xem req.user có gì
-      console.log("=== DEBUG GET JOB ===");
-      console.log("User Role:", req.user?.role);
-      console.log("User ID:", req.user?.id || req.user?._id);
-      console.log("Job ID:", job._id);
 
       // 2. Mở rộng điều kiện check role (bao gồm cả 'candidate' và 'user')
       if (
@@ -176,12 +202,11 @@ const jobController = {
             job: job._id,
             candidate: currentUserId, // Dùng biến ID đã chuẩn hóa ở trên
           })
-            .select("_id status note")
+            .select("_id status")
             .lean(),
           User.findById(currentUserId).select("savedJobs").lean(),
         ]);
 
-        console.log("Application tìm thấy:", application); // <-- Check xem tìm thấy đơn không
 
         jobData.isApplied = Boolean(application);
         jobData.isSaved = Boolean(
@@ -192,7 +217,6 @@ const jobController = {
           // Gán data cho Frontend
           jobData.currentUserApplication = {
             status: application.status,
-            note: application.note,
           };
           jobData.applicationStatus = application.status;
         }
@@ -209,6 +233,12 @@ const jobController = {
 
   checkAlreadyApplied: async (req, res, next) => {
     try {
+      if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: "ID việc làm không hợp lệ" });
+      const job = await Job.findById(req.params.id);
+      if (!job) return res.status(404).json({ message: "Không tìm thấy việc làm" });
+      if (job.status !== "active" || (job.deadline && job.deadline < new Date())) {
+        return res.status(409).json({ message: "Tin tuyển dụng đã đóng hoặc hết hạn" });
+      }
       const existingApp = await Application.findOne({
         job: req.params.id,
         candidate: req.user.id,
@@ -253,13 +283,29 @@ const jobController = {
         (req.files && req.files.cv && req.files.cv[0]) ||
         (req.files && req.files.file && req.files.file[0]);
 
+      const files = [req.file, ...Object.values(req.files || {}).flat()].filter(Boolean);
+      if (files.length > 1) {
+        await removeRequestFiles(req);
+        return res.status(400).json({ message: "Chỉ được đính kèm một CV" });
+      }
+      const job = await Job.findById(jobId);
+      if (!job || job.status !== "active" || (job.deadline && job.deadline < new Date())) {
+        await removeRequestFiles(req);
+        return res.status(409).json({ message: "Tin tuyển dụng không còn nhận hồ sơ" });
+      }
+      if (![fullName, email, phone].every((value) => typeof value === "string" && value.trim() && value.length <= 250) ||
+          !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        await removeRequestFiles(req);
+        return res.status(400).json({ message: "Thông tin ứng tuyển không hợp lệ" });
+      }
+
       // 1. Kiểm tra xem đã ứng tuyển chưa
       const existingApp = await Application.findOne({
         job: jobId,
         candidate: candidateId,
       });
       if (existingApp) {
-        await removeUploadedFile(req.file);
+        await removeRequestFiles(req);
         return res.status(409).json({
           success: false,
           isApplied: true,
@@ -286,17 +332,20 @@ const jobController = {
         applicationData.pdfCvUrl = `/uploads/cvs/${uploadedFile.filename}`;
       } else if (cvType === "online") {
         if (!onlineCvSnapshot) {
-          await removeUploadedFile(uploadedFile);
+          await removeRequestFiles(req);
           return res
             .status(400)
             .json({ message: "Không tìm thấy dữ liệu CV Online" });
         }
-        applicationData.onlineCvSnapshot =
-          typeof onlineCvSnapshot === "string"
-            ? JSON.parse(onlineCvSnapshot)
-            : onlineCvSnapshot;
+        try {
+          applicationData.onlineCvSnapshot = typeof onlineCvSnapshot === "string" ? JSON.parse(onlineCvSnapshot) : onlineCvSnapshot;
+        } catch {
+          await removeRequestFiles(req);
+          return res.status(400).json({ message: "Dữ liệu CV Online không hợp lệ" });
+        }
+        await removeRequestFiles(req);
       } else {
-        await removeUploadedFile(uploadedFile);
+        await removeRequestFiles(req);
         return res.status(400).json({
           message:
             "Loại CV không hợp lệ. Vui lòng gửi cvType = 'pdf' hoặc 'online'.",
@@ -308,14 +357,6 @@ const jobController = {
       const application = new Application(applicationData);
       await application.save();
 
-      // 5. Tăng biến đếm applied của Job lên 1
-      await Job.findByIdAndUpdate(jobId, { $inc: { applied: 1 } });
-
-      // 6. Push vào mảng appliedJobs của User
-      await User.findByIdAndUpdate(candidateId, {
-        $addToSet: { appliedJobs: jobId },
-      });
-
       res.status(201).json({
         success: true,
         isApplied: true,
@@ -324,14 +365,14 @@ const jobController = {
     } catch (error) {
       // Bắt lỗi Unique Index nếu bị click đúp tạo 2 request cùng lúc
       if (error.code === 11000) {
-        await removeUploadedFile(req.file);
+        await removeRequestFiles(req);
         return res.status(409).json({
           success: false,
           isApplied: true,
           message: "Bạn đã ứng tuyển công việc này rồi",
         });
       }
-      await removeUploadedFile(req.file);
+      await removeRequestFiles(req);
       res
         .status(500)
         .json({ message: "Lỗi khi ứng tuyển", error: error.message });
@@ -344,8 +385,17 @@ const jobController = {
       const jobId = req.params.id;
       const userId = req.user.id;
 
+      if (!mongoose.Types.ObjectId.isValid(jobId) || !(await Job.exists({ _id: jobId }))) {
+        return res.status(404).json({ message: "Không tìm thấy việc làm" });
+      }
+      if (req.body?.saved !== undefined && typeof req.body.saved !== "boolean") {
+        return res.status(400).json({ message: "Trạng thái lưu không hợp lệ" });
+      }
+
       const user = await User.findById(userId);
-      const isSaved = user.savedJobs.includes(jobId);
+      if (!user) return res.status(404).json({ message: "Không tìm thấy ứng viên" });
+      // Explicit desired state makes retries safe. Keep toggle for legacy clients.
+      const isSaved = req.body?.saved !== undefined ? !req.body.saved : user.savedJobs.includes(jobId);
 
       if (isSaved) {
         // Nếu đã lưu rồi -> Hủy lưu
@@ -389,7 +439,6 @@ const jobController = {
       }
 
       await Job.findByIdAndDelete(jobId);
-      await Employer.findByIdAndUpdate(employerId, { $inc: { totalJobs: -1 } });
       await Application.deleteMany({ job: jobId });
       await User.updateMany(
         { $or: [{ appliedJobs: jobId }, { savedJobs: jobId }] },
@@ -420,7 +469,7 @@ const jobController = {
           .json({ message: "Không tìm thấy thông tin nhà tuyển dụng" });
       }
 
-      const jobData = req.body;
+      const jobData = pick(req.body, JOB_FIELDS);
 
       // Khởi tạo Job mới
       const newJob = new Job({
@@ -438,9 +487,6 @@ const jobController = {
       });
 
       await newJob.save();
-
-      // Cập nhật tăng tổng số Job của Employer này lên 1
-      await Employer.findByIdAndUpdate(employerId, { $inc: { totalJobs: 1 } });
 
       res.status(201).json({
         success: true,

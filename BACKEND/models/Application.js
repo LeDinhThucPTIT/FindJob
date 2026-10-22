@@ -37,16 +37,19 @@ const applicationSchema = new mongoose.Schema(
 
     coverLetter: { type: String },
     note: { type: String, default: "" },
+    statusVersion: { type: Number, default: 0 },
+    statusUpdatedAt: { type: Date },
     status: {
       type: String,
       enum: ["new", "reviewing", "interviewed", "offered", "rejected"],
       default: "new",
     },
   },
-  { timestamps: true },
+  { timestamps: true, optimisticConcurrency: true },
 );
 
 // Đảm bảo 1 user chỉ nộp 1 job 1 lần
 applicationSchema.index({ job: 1, candidate: 1 }, { unique: true });
+applicationSchema.index({ candidate: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Application", applicationSchema);

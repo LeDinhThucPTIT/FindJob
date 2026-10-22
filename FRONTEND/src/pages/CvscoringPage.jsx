@@ -1,6 +1,6 @@
 // ===========================
 // pages/CVScoringPage.jsx
-// Trang AI chấm điểm CV – dùng Anthropic API thật
+// Trang AI chấm điểm CV – dùng Gemini API thật
 // ===========================
 
 import React, { useState, useRef } from "react";
@@ -181,63 +181,7 @@ const KeywordChip = ({ word, found }) => (
   </span>
 );
 
-// ── Parse AI JSON safely ─────────────────────────────────────────────────────
-const parseAIResult = (text) => {
-  try {
-    const clean = text.replace(/```json|```/g, "").trim();
-    const start = clean.indexOf("{");
-    const end = clean.lastIndexOf("}");
-    if (start === -1 || end === -1) throw new Error("No JSON");
-    return JSON.parse(clean.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-};
-
-// ── Build prompt ─────────────────────────────────────────────────────────────
-const buildPrompt = (cvText, jobTitle, jobDesc) => `
-Bạn là chuyên gia HR và tuyển dụng tại Việt Nam với 15 năm kinh nghiệm. Hãy chấm điểm và phân tích CV sau.
-
-=== NỘI DUNG CV ===
-${cvText}
-
-=== VỊ TRÍ ỨNG TUYỂN ===
-Vị trí: ${jobTitle || "Chưa xác định"}
-${jobDesc ? `Mô tả JD:\n${jobDesc}` : ""}
-
-=== YÊU CẦU PHÂN TÍCH ===
-Trả về JSON object với cấu trúc CHÍNH XÁC sau (không thêm text nào ngoài JSON):
-{
-  "overallScore": <số 0-100>,
-  "grade": "<A+|A|B+|B|C+|C|D>",
-  "summary": "<nhận xét tổng quan 2-3 câu bằng tiếng Việt>",
-  "sections": {
-    "format": { "score": <0-100>, "details": "<nhận xét ngắn>" },
-    "experience": { "score": <0-100>, "details": "<nhận xét ngắn>" },
-    "skills": { "score": <0-100>, "details": "<nhận xét ngắn>" },
-    "education": { "score": <0-100>, "details": "<nhận xét ngắn>" },
-    "presentation": { "score": <0-100>, "details": "<nhận xét ngắn>" },
-    "ats_compatibility": { "score": <0-100>, "details": "<nhận xét ngắn>" }
-  },
-  "strengths": ["<điểm mạnh 1>", "<điểm mạnh 2>", "<điểm mạnh 3>"],
-  "weaknesses": ["<điểm yếu 1>", "<điểm yếu 2>", "<điểm yếu 3>"],
-  "tips": ["<gợi ý cải thiện 1>", "<gợi ý 2>", "<gợi ý 3>", "<gợi ý 4>"],
-  "keywords": {
-    "found": ["<keyword có trong CV>", ...],
-    "missing": ["<keyword quan trọng còn thiếu>", ...]
-  },
-  "jobMatch": <số 0-100 nếu có JD, else null>,
-  "hiringChance": "<Cao|Khá cao|Trung bình|Thấp>",
-  "estimatedSalary": "<ước tính mức lương phù hợp theo thị trường VN>",
-  "improvementPriority": ["<ưu tiên cải thiện 1>", "<ưu tiên 2>", "<ưu tiên 3>"]
-}
-
-Chú ý: Tất cả text trong JSON phải bằng tiếng Việt. Chỉ trả về JSON, không có text nào khác.
-`;
-
-// ════════════════════════════════════════════════════════════════════
-// MAIN PAGE
-// ════════════════════════════════════════════════════════════════════
+// Main scoring page. AI responses are validated by the backend.
 const CVScoringPage = () => {
   const [step, setStep] = useState("upload"); // upload | scoring | result
   const [uploadedFile, setUploadedFile] = useState(null);
@@ -251,13 +195,29 @@ const CVScoringPage = () => {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const abortRef = useRef(null);
+  const progressTimerRef = useRef(null);
+  const extractionRef = useRef(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractionMessage, setExtractionMessage] = useState("");
+  React.useEffect(() => () => extractionRef.current?.abort(), []);
+  React.useEffect(() => {
+    extractionRef.current?.abort();
+    setExtracting(false);
+    setExtractionMessage("");
+  }, [inputMode]);
+
+  React.useEffect(() => () => {
+    abortRef.current?.abort();
+    clearInterval(progressTimerRef.current);
+  }, []);
 
   // ── Saved CVs from cvService ─────────────────────────────────────
   const [savedCVs, setSavedCVs] = useState([]);
   React.useEffect(() => {
     cvService
       .getCVList()
-      .then((list) => setSavedCVs(list.filter((c) => c.type === "created")));
+      .then((list) => setSavedCVs(list.filter((c) => c.type === "created")))
+      .catch(() => setSavedCVs([]));
   }, []);
 
   // ── CV text từ CV builder ────────────────────────────────────────
@@ -310,37 +270,32 @@ const CVScoringPage = () => {
 
   // ── File upload handler ──────────────────────────────────────────
   const handleUploadFile = (file) => {
-    const allowed = [
-      "application/pdf",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "text/plain",
-    ];
-    if (!allowed.includes(file.type)) {
-      message.error("Chỉ hỗ trợ PDF, Word, hoặc TXT");
+    if (!/\.(pdf|docx|txt)$/i.test(file.name) || file.size > 10 * 1024 * 1024) {
+      message.error("Chỉ đọc PDF, DOCX, TXT tối đa 10MB. Hãy chuyển DOC sang DOCX/PDF.");
       return false;
     }
-    if (file.size > 20 * 1024 * 1024) {
-      message.error("File tối đa 20MB");
-      return false;
-    }
+    extractionRef.current?.abort();
+    const request = new AbortController();
+    extractionRef.current = request;
     setUploadedFile(file);
-    // Try read as text (works for .txt)
-    if (file.type === "text/plain") {
-      const reader = new FileReader();
-      reader.onload = (e) => setCvText(e.target.result);
-      reader.readAsText(file);
-    } else {
-      message.info(
-        "File PDF/Word đã chọn. Hiện tại hệ thống chưa tự động trích xuất nội dung từ file này. Vui lòng mở file và dán nội dung CV vào ô bên dưới.",
-      );
-    }
+    setCvText("");
+    setExtracting(true);
+    setExtractionMessage("Đang đọc nội dung CV...");
+    cvService.extractText(file, request.signal).then((data) => {
+      if (request.signal.aborted) return;
+      setCvText(data.text);
+      setExtractionMessage("Đã đọc CV. Hãy kiểm tra và sửa văn bản bên dưới trước khi chấm điểm.");
+    }).catch((error) => {
+      if (request.signal.aborted) return;
+      setExtractionMessage(error.response?.data?.message || error.message || "Không đọc được file. Hãy dán nội dung CV bên dưới.");
+    }).finally(() => {
+      if (!request.signal.aborted) setExtracting(false);
+    });
     return false;
   };
 
-  // ── Call Anthropic API ───────────────────────────────────────────
-  // ── Call Backend API (sử dụng Gemini) ───────────────────────────────────
   const scoreCV = async () => {
+    if (scoring || extracting) return;
     const textToScore = cvText.trim();
     if (!textToScore || textToScore.length < 100) {
       message.error("Vui lòng nhập nội dung CV (tối thiểu 100 ký tự)");
@@ -363,6 +318,9 @@ const CVScoringPage = () => {
     ];
 
     let msgIdx = 0;
+    const request = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = request;
     const progressTimer = setInterval(() => {
       if (msgIdx < msgs.length) {
         setProgress(msgs[msgIdx].pct);
@@ -370,13 +328,15 @@ const CVScoringPage = () => {
         msgIdx++;
       }
     }, 900);
+    progressTimerRef.current = progressTimer;
 
     try {
       const parsed = await cvService.scoreCV({
         cvText: textToScore,
         jobTitle: jobTitle,
         jobDesc: jobDesc,
-      });
+      }, request.signal);
+      if (request.signal.aborted) return;
 
       clearInterval(progressTimer);
 
@@ -387,10 +347,12 @@ const CVScoringPage = () => {
       setProgress(100);
       setProgressMsg("✅ Hoàn thành!");
       await new Promise((r) => setTimeout(r, 600));
+      if (request.signal.aborted) return;
       setResult(parsed);
       setStep("result");
     } catch (err) {
       clearInterval(progressTimer);
+      if (request.signal.aborted) return;
       setError(err.message || "Có lỗi xảy ra khi gọi AI");
       setStep("upload");
       setScoring(false);
@@ -430,12 +392,16 @@ const CVScoringPage = () => {
       <div className="cv-scoring-header">
         <div className="container">
           <div className="cv-scoring-header__badge">
-            <RobotOutlined /> Được hỗ trợ bởi Claude AI
+            <RobotOutlined /> Được hỗ trợ bởi Gemini AI
           </div>
           <h1 className="cv-scoring-header__title">AI Chấm điểm CV</h1>
           <p className="cv-scoring-header__subtitle">
             Phân tích CV của bạn bằng AI tiên tiến — nhận điểm số, nhận xét chi
             tiết và gợi ý cụ thể để tăng cơ hội được phỏng vấn.
+          </p>
+          <p className="cv-scoring-header__subtitle">
+            Khi chấm điểm, nội dung CV và JD được gửi đến Gemini. Kết quả chỉ
+            mang tính tham khảo, không bảo đảm vượt qua ATS hoặc được phỏng vấn.
           </p>
           <div className="cv-scoring-header__features">
             {[
@@ -497,6 +463,7 @@ const CVScoringPage = () => {
                       rows={14}
                       placeholder={`Dán nội dung CV của bạn vào đây...\n\nVí dụ:\nNguyễn Văn An\nFrontend Developer\nEmail: an@email.com | SĐT: 0912345678 | Hà Nội\n\nMỤC TIÊU NGHỀ NGHIỆP\nFrontend Developer với 3 năm kinh nghiệm...\n\nKINH NGHIỆM LÀM VIỆC\nFrontend Developer – Công ty ABC (01/2022 – Hiện tại)\n- Phát triển UI với ReactJS + TypeScript\n...\n\nHỌC VẤN\nĐại học Bách khoa Hà Nội – KTMT – Kỹ sư (2018-2022)\n\nKỸ NĂNG\nReactJS, TypeScript, Node.js, Git, Docker`}
                       className="cv-text-input"
+                        disabled={extracting}
                     />
                     <div className="cv-text-counter">
                       <span
@@ -534,7 +501,7 @@ const CVScoringPage = () => {
                       <div className="builder-cv-list">
                         {savedCVs.map((cv) => (
                           <div
-                            key={cv.id}
+                            key={cv._id || cv.id}
                             className={`builder-cv-item ${cvText === getTextFromBuilderCV(cv.data) ? "selected" : ""}`}
                             onClick={() =>
                               setCvText(getTextFromBuilderCV(cv.data))
@@ -577,7 +544,7 @@ const CVScoringPage = () => {
                 {inputMode === "upload" && (
                   <div>
                     <Upload.Dragger
-                      accept=".pdf,.doc,.docx,.txt"
+                      accept=".pdf,.docx,.txt"
                       showUploadList={false}
                       beforeUpload={handleUploadFile}
                       className="score-upload-dragger"
@@ -614,7 +581,7 @@ const CVScoringPage = () => {
                               Kéo thả hoặc <span>nhấn để chọn file</span>
                             </p>
                             <p className="upload-hint-sub">
-                              PDF, DOC, DOCX, TXT · Tối đa 20MB
+                              PDF (tối đa 30 trang), DOCX, TXT · Tối đa 10MB
                             </p>
                           </>
                         )}
@@ -630,25 +597,13 @@ const CVScoringPage = () => {
                         rows={6}
                         placeholder="Dán text từ CV vào đây..."
                         className="cv-text-input"
+                        disabled={extracting}
                       />
-                      {uploadedFile &&
-                        !uploadedFile.type.includes("text/plain") && (
-                          <div
-                            style={{
-                              marginTop: 10,
-                              color: "#444",
-                              background: "#f8fafc",
-                              border: "1px solid #e2e8f0",
-                              padding: "12px 14px",
-                              borderRadius: 8,
-                            }}
-                          >
-                            <strong>Lưu ý:</strong> Với file PDF/Word, hệ thống
-                            hiện chưa tự động trích xuất text. Vui lòng mở file
-                            và dán toàn bộ nội dung CV vào ô bên trên để chấm
-                            điểm.
-                          </div>
-                        )}
+                      {extractionMessage && (
+                        <p role="status" aria-live="polite" style={{ marginTop: 10 }}>
+                          {extractionMessage}
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -736,7 +691,7 @@ const CVScoringPage = () => {
                 block
                 icon={<RobotOutlined />}
                 onClick={scoreCV}
-                disabled={!cvText.trim() || cvText.length < 100}
+                disabled={extracting || !cvText.trim() || cvText.trim().length < 100 || cvText.length > 40000}
                 className="score-btn"
               >
                 <ThunderboltFilled /> Chấm điểm CV ngay

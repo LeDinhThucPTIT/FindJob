@@ -1,12 +1,22 @@
-BACKEND/node_modules
-topcv-clone/node_modules
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
 
-BACKEND/.env
-FRONTEND/.env
+# Local environment and credentials
+.env
+.env.*
+!.env.example
 
-dist
-build
+# Runtime data (never commit personal CVs or uploaded images)
+BACKEND/uploads/
+*.log
+*.pid
+*.tsbuildinfo
 
-.vscode
-.idea
-node_modules
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

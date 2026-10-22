@@ -1,3 +1,5 @@
+import { APPLICATION_STATUS_LABELS } from "../constants/applicationStatus";
+import { sanitizeHtml } from "../utils/sanitizeHtml";
 // ===========================
 // Trang chi tiết việc làm
 // ===========================
@@ -52,245 +54,69 @@ const normalizeUploadFileList = (event) => {
   return event?.fileList || [];
 };
 
-const hasAppliedJob = (appliedJobs, jobId) => {
-  if (!Array.isArray(appliedJobs) || !jobId) return false;
-
-  return appliedJobs.some(
-    (item) => String(getAppliedJobId(item)) === String(jobId),
-  );
-};
-
-const normalizeApplicationStatus = (status) => {
-  const value = String(status || "").toLowerCase();
-
-  const statusMap = {
-    pending: "reviewing",
-    review: "reviewing",
-    reviewed: "reviewing",
-    considering: "reviewing",
-    interview: "interviewed",
-    interviewing: "interviewed",
-    accepted: "offered",
-    offer: "offered",
-    hired: "offered",
-    denied: "rejected",
-    reject: "rejected",
-    declined: "rejected",
-  };
-
-  return statusMap[value] || value || null;
-};
-
-const getEntityId = (entity) => {
-  if (!entity) return null;
-  if (typeof entity !== "object") return entity;
-  return entity._id || entity.id || entity.jobId || null;
-};
-
-const getUserIds = (user) =>
-  [user?.id, user?._id, user?.userId].filter(Boolean).map(String);
-
-const getAppliedJobId = (item) => {
-  if (!item || typeof item !== "object") return item;
-
-  return (
-    getEntityId(item.job) ||
-    getEntityId(item.jobId) ||
-    item.job?._id ||
-    item.job?.id ||
-    item._id ||
-    item.id
-  );
-};
-
-const getAppliedJobStatus = (item) => {
-  if (!item || typeof item !== "object") return null;
-
-  return normalizeApplicationStatus(
-    item.status ||
-      item.applicationStatus ||
-      item.application?.status ||
-      item.latestApplicationStatus,
-  );
-};
-
-const findAppliedJob = (appliedJobs, jobId) => {
-  if (!Array.isArray(appliedJobs) || !jobId) return null;
-  return appliedJobs.find(
-    (item) => String(getAppliedJobId(item)) === String(jobId),
-  );
-};
-
-const getStatusFromJobDetail = (jobDetail) =>
-  normalizeApplicationStatus(
-    jobDetail?.applicationStatus ||
-      jobDetail?.myApplicationStatus ||
-      jobDetail?.currentUserApplication?.status ||
-      jobDetail?.application?.status ||
-      jobDetail?.appliedStatus,
-  );
-
-const getStoredApplicationStatus = (jobId, user, allowGeneric = false) => {
-  if (!jobId) return null;
-
-  const candidateKeys = getUserIds(user).map(
-    (userId) => `applicationStatus:${userId}:${jobId}`,
-  );
-  const keys = allowGeneric
-    ? [...candidateKeys, `applicationStatus:${jobId}`]
-    : candidateKeys;
-
-  for (const key of keys) {
-    const status = normalizeApplicationStatus(localStorage.getItem(key));
-    if (status) return status;
-  }
-
-  return null;
-};
-
 const JobDetailPage = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, user, updateUser } = useAuth();
 
   const [job, setJob] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
   const [applied, setApplied] = useState(false);
   const [applicationStatus, setApplicationStatus] = useState(null); // new: track status like offered/rejected
-  const [applicationNote, setApplicationNote] = useState(null);
   const [applyModalOpen, setApplyModalOpen] = useState(false);
   const [applying, setApplying] = useState(false);
   const [form] = Form.useForm();
+  const acceptingApplications = job?.status === "active" && (!job.deadline || new Date(job.deadline).getTime() >= Date.now());
 
   useEffect(() => {
+    let stopped = false;
+    let refreshing = false;
+    const controller = new AbortController();
+    setJob(null);
+    setApplied(false);
+    setApplicationStatus(null);
+    const refreshApplication = async () => {
+      if (!isAuthenticated || user?.role !== "candidate" || document.hidden || refreshing) return;
+      refreshing = true;
+      try {
+        const data = await jobService.getMyApplication(id, controller.signal);
+        if (!stopped) {
+          setApplied(data.isApplied);
+          setApplicationStatus(data.application?.status || null);
+        }
+      } catch { /* Keep the last confirmed state during temporary network errors. */ }
+      finally { refreshing = false; }
+    };
     const fetchJob = async () => {
       setLoading(true);
       try {
-        const data = await jobService.getJobById(id);
+        const data = await jobService.getJobById(id, controller.signal);
+        if (stopped) return;
         setJob(data);
-        const jobId = data._id || data.id;
-        let latestUser = user;
-
-        if (isAuthenticated && user?.role !== "employer") {
-          try {
-            const profileData = await authService.getProfile();
-            latestUser = profileData.user || profileData;
-            if (profileData.user) {
-              localStorage.setItem("user", JSON.stringify(profileData.user));
-            }
-          } catch {
-            latestUser = user;
-          }
-        }
-        // Kiểm tra xem User đã lưu job này chưa
-        if (latestUser && latestUser.savedJobs) {
-          setSaved(latestUser.savedJobs.includes(jobId));
-        }
-        // Kiểm tra xem User đã ứng tuyển job này chưa
-        const appliedJob = findAppliedJob(latestUser?.appliedJobs, jobId);
-        const hasApplied =
-          Boolean(data.isApplied || data.hasApplied) ||
-          hasAppliedJob(latestUser?.appliedJobs, jobId);
-        const nextApplicationStatus =
-          getStatusFromJobDetail(data) ||
-          getAppliedJobStatus(appliedJob) ||
-          getStoredApplicationStatus(jobId, latestUser, hasApplied);
-        const initialNote =
-          data?.currentUserApplication?.note || appliedJob?.note || null;
-
-        setApplicationStatus(nextApplicationStatus);
-        setApplicationNote(initialNote);
-        setApplied(hasApplied || Boolean(nextApplicationStatus));
+        setSaved(Boolean(data.isSaved));
+        setApplied(Boolean(data.isApplied));
+        setApplicationStatus(data.applicationStatus || null);
       } catch {
-        message.error("Không tìm thấy việc làm");
-        navigate("/jobs");
-      } finally {
-        setLoading(false);
-      }
+        if (!stopped) {
+          message.error("Không tìm thấy việc làm");
+          navigate("/jobs");
+        }
+      } finally { if (!stopped) setLoading(false); }
     };
     fetchJob();
     window.scrollTo(0, 0);
-
-    // Listen for cross-page updates to applications (e.g., employer offers/rejects)
-    const handler = (e) => {
-      try {
-        const d = e.detail || {};
-        const changedJobId = d.jobId;
-        const changedCandidateId = d.candidateId;
-        const newStatus = d.status;
-
-        if (!user) return;
-
-        // Accept multiple id fields for user and candidate
-        const userIds = getUserIds(user);
-        const candidateIdStr = changedCandidateId && String(changedCandidateId);
-
-        const isSameCandidate = candidateIdStr
-          ? userIds.some((uid) => String(uid) === candidateIdStr)
-          : false;
-
-        const isSameJob = changedJobId
-          ? String(changedJobId) === String(id)
-          : true;
-
-        // Also accept if the current user's appliedJobs includes the jobId
-        const userAppliedThisJob = hasAppliedJob(
-          user?.appliedJobs,
-          changedJobId || id,
-        );
-
-        if (
-          (isSameCandidate && isSameJob) ||
-          (isSameJob && userAppliedThisJob)
-        ) {
-          const normalizedStatus = normalizeApplicationStatus(newStatus);
-          setApplicationStatus(normalizedStatus);
-          // set note if provided
-          if (d.note) setApplicationNote(d.note);
-          if (
-            normalizedStatus === "offered" ||
-            normalizedStatus === "rejected"
-          ) {
-            setApplied(true);
-          }
-        }
-      } catch (err) {
-        message.error("Có lỗi xảy ra khi cập nhật trạng thái ứng dụng", err);
-      }
-    };
-
-    window.addEventListener("applicationStatusChanged", handler);
-    const storageHandler = (event) => {
-      const currentJobId = id;
-      if (!event.key || !currentJobId) return;
-
-      const userIds = getUserIds(user);
-
-      // Accept if key mentions current job id or any of the user's ids
-      const keyMatchesJob = event.key.includes(String(currentJobId));
-      const keyMatchesUser = userIds.some((uid) =>
-        event.key.includes(String(uid)),
-      );
-
-      if (keyMatchesJob || keyMatchesUser) {
-        if (event.key.includes("applicationNote")) {
-          setApplicationNote(event.newValue);
-        } else {
-          const normalizedStatus = normalizeApplicationStatus(event.newValue);
-          setApplicationStatus(normalizedStatus);
-          if (normalizedStatus) setApplied(true);
-        }
-      }
-    };
-
-    window.addEventListener("storage", storageHandler);
-
+    const timer = setInterval(refreshApplication, 30000);
+    window.addEventListener("focus", refreshApplication);
+    document.addEventListener("visibilitychange", refreshApplication);
     return () => {
-      window.removeEventListener("applicationStatusChanged", handler);
-      window.removeEventListener("storage", storageHandler);
+      stopped = true;
+      controller.abort();
+      clearInterval(timer);
+      window.removeEventListener("focus", refreshApplication);
+      document.removeEventListener("visibilitychange", refreshApplication);
     };
-  }, [id, isAuthenticated, navigate, user]);
+  }, [id, isAuthenticated, user?.role, navigate]);
 
   const handleApply = async (values) => {
     if (!isAuthenticated) {
@@ -324,12 +150,13 @@ const JobDetailPage = () => {
       // Gửi payload mới thay vì values cũ
       await jobService.applyJob(jobId, payload);
       setApplied(true);
+      setApplicationStatus("new");
 
       // Fetch lại profile để cập nhật appliedJobs
       try {
         const profileData = await authService.getProfile();
         if (profileData.user) {
-          localStorage.setItem("user", JSON.stringify(profileData.user));
+          updateUser(profileData.user);
         }
       } catch {
         // Nếu fetch profile thất bại, vẫn show success vì apply đã thành công
@@ -370,8 +197,10 @@ const JobDetailPage = () => {
     }
 
     try {
-      await jobService.saveJob(id);
-      setSaved(!saved);
+      const result = await jobService.saveJob(id, !saved);
+      setSaved(result.isSaved);
+      const others = (user.savedJobs || []).filter((item) => String(item?._id || item?.id || item) !== String(id));
+      updateUser({ savedJobs: result.isSaved ? [...others, job] : others });
       message.success(saved ? "Đã bỏ lưu" : "Đã lưu việc làm");
     } catch (error) {
       message.error("Có lỗi xảy ra, không thể lưu tin");
@@ -379,6 +208,10 @@ const JobDetailPage = () => {
   };
 
   const handleOpenApplyModal = () => {
+    if (!acceptingApplications) {
+      message.warning("Tin tuyển dụng đã đóng hoặc hết hạn");
+      return;
+    }
     if (!isAuthenticated) {
       message.warning("Vui lòng đăng nhập để ứng tuyển");
       navigate("/login");
@@ -525,7 +358,7 @@ const JobDetailPage = () => {
                 <Button
                   type="primary"
                   size="large"
-                  disabled={applied}
+                  disabled={applied || !acceptingApplications}
                   onClick={handleOpenApplyModal}
                   style={{
                     height: 48,
@@ -534,7 +367,7 @@ const JobDetailPage = () => {
                     fontSize: 16,
                   }}
                 >
-                  {applied ? "Đã ứng tuyển" : "Ứng tuyển ngay"}
+                  {applied ? "Đã ứng tuyển" : acceptingApplications ? "Ứng tuyển ngay" : "Đã hết hạn tuyển"}
                 </Button>
                 {/* Nếu có applicationStatus, hiển thị tag cho ứng viên */}
                 <Button
@@ -585,31 +418,10 @@ const JobDetailPage = () => {
                       borderRadius: 8,
                     }}
                   >
-                    {applicationStatus === "offered"
-                      ? "Đã offer"
-                      : applicationStatus === "rejected"
-                        ? "Từ chối"
-                        : applied
-                          ? "Đang xem xét"
-                          : "—"}
+                    {APPLICATION_STATUS_LABELS[applicationStatus] || (applied ? "Đã gửi hồ sơ" : "—")}
                   </Button>
                 )}
-                {applicationNote && user?.role !== "employer" && (
-                  <div
-                    style={{
-                      marginTop: 10,
-                      border: "1px solid var(--color-border-light)",
-                      padding: 12,
-                      borderRadius: 8,
-                      background: "white",
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, marginBottom: 6 }}>
-                      Ghi chú từ nhà tuyển dụng
-                    </div>
-                    <div style={{ color: "#374151" }}>{applicationNote}</div>
-                  </div>
-                )}
+
               </div>
 
               <div className="job-detail-stats">
@@ -633,7 +445,7 @@ const JobDetailPage = () => {
                 className="job-detail-description"
                 // Dùng toán tử OR tránh trường hợp description null gây sập
                 dangerouslySetInnerHTML={{
-                  __html: job.description || "<p>Chưa có mô tả</p>",
+                  __html: sanitizeHtml(job.description) || "<p>Chưa có mô tả</p>",
                 }}
               />
             </div>
@@ -738,11 +550,11 @@ const JobDetailPage = () => {
               type="primary"
               block
               size="large"
-              disabled={applied}
+              disabled={applied || !acceptingApplications}
               onClick={handleOpenApplyModal}
               style={{ height: 52, fontWeight: 700, fontSize: 16 }}
             >
-              {applied ? "Đã ứng tuyển" : "Ứng tuyển ngay"}
+              {applied ? "Đã ứng tuyển" : acceptingApplications ? "Ứng tuyển ngay" : "Đã hết hạn tuyển"}
             </Button>
           </div>
         </div>

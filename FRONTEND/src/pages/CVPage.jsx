@@ -184,6 +184,7 @@ const CVCard = ({
         {!cv.isDefault && (
           <Tooltip title="Đặt làm mặc định">
             <Button
+              aria-label={`Đặt ${cv.name} làm CV mặc định`}
               icon={<StarOutlined />}
               size="small"
               onClick={() => onSetDefault(cv._id || cv.id)}

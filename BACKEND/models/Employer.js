@@ -30,6 +30,7 @@ const employerSchema = new mongoose.Schema(
 
       trim: true,
     },
+    authVersion: { type: Number, default: 0 },
 
     logo: {
       type: String,

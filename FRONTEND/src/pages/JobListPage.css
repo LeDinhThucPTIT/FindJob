@@ -80,3 +80,11 @@
   justify-content: center;
   margin-top: 36px;
 }
+
+@media (max-width: 767px) {
+  .job-list-filters { margin-bottom: 20px; }
+  .job-list-header__search { flex-wrap: wrap; }
+  .job-list-header__search .ant-input-affix-wrapper { min-width: 0; flex-basis: 100% !important; }
+  .job-list-toolbar__left { min-width: 0; }
+  .job-list-filter-tags { overflow-wrap: anywhere; }
+}

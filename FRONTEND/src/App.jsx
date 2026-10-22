@@ -1,24 +1,25 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
+import { Spin } from "antd";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import MainLayout from "./layouts/MainLayout";
 import AuthLayout from "./layouts/AuthLayout";
-import HomePage from "./pages/HomePage";
-import JobListPage from "./pages/JobListPage";
-import JobDetailPage from "./pages/JobDetailPage";
-import LoginPage from "./pages/LoginPage";
-import RegisterPage from "./pages/RegisterPage";
-import ProfilePage from "./pages/ProfilePage";
-import EmployerDashboardPage from "./pages/EmployerDashboardPage";
-import NotFoundPage from "./pages/NotFoundPage";
+const HomePage = lazy(() => import("./pages/HomePage"));
+const JobListPage = lazy(() => import("./pages/JobListPage"));
+const JobDetailPage = lazy(() => import("./pages/JobDetailPage"));
+const LoginPage = lazy(() => import("./pages/LoginPage"));
+const RegisterPage = lazy(() => import("./pages/RegisterPage"));
+const ProfilePage = lazy(() => import("./pages/ProfilePage"));
+const EmployerDashboardPage = lazy(() => import("./pages/EmployerDashboardPage"));
+const NotFoundPage = lazy(() => import("./pages/NotFoundPage"));
 import { AuthProvider } from "./hooks/useAuth";
 import ProtectedRoute from "./components/common/ProtectedRoute";
-import CompaniesPage from "./pages/CompaniesPage";
-import CVPage from "./pages/CVPage";
-import BecomeEmployerPage from "./pages/BecomeEmployerPage";
-import CompanyDetailPage from "./pages/CompanyDetailPage";
-import CvscoringPage from "./pages/CvscoringPage";
+const CompaniesPage = lazy(() => import("./pages/CompaniesPage"));
+const CVPage = lazy(() => import("./pages/CVPage"));
+const BecomeEmployerPage = lazy(() => import("./pages/BecomeEmployerPage"));
+const CompanyDetailPage = lazy(() => import("./pages/CompanyDetailPage"));
+const CvscoringPage = lazy(() => import("./pages/CvscoringPage"));
 import EmployerLayout from "./layouts/EmployerLayout";
-import ForgotPassPage from "./pages/ForgotPassPage";
+const ForgotPassPage = lazy(() => import("./pages/ForgotPassPage"));
 import { GoogleOAuthProvider } from "@react-oauth/google";
 
 const App = () => {
@@ -26,6 +27,7 @@ const App = () => {
     <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID}>
       <BrowserRouter>
         <AuthProvider>
+          <Suspense fallback={<div style={{ padding: 80, textAlign: "center" }}><Spin size="large" /></div>}>
           <Routes>
             {/* Public routes with main layout */}
             <Route element={<MainLayout />}>
@@ -52,7 +54,7 @@ const App = () => {
               <Route
                 path="/cv"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute requiredRole="candidate">
                     <CVPage />
                   </ProtectedRoute>
                 }
@@ -60,7 +62,7 @@ const App = () => {
               <Route
                 path="/cvscoring"
                 element={
-                  <ProtectedRoute>
+                  <ProtectedRoute requiredRole="candidate">
                     <CvscoringPage />
                   </ProtectedRoute>
                 }
@@ -90,6 +92,7 @@ const App = () => {
             <Route path="/404" element={<NotFoundPage />} />
             <Route path="*" element={<Navigate to="/404" replace />} />
           </Routes>
+          </Suspense>
         </AuthProvider>
       </BrowserRouter>
     </GoogleOAuthProvider>

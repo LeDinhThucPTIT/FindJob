@@ -3,6 +3,9 @@ const Job = require("../models/Job");
 const Application = require("../models/Application");
 const Employer = require("../models/Employer");
 const mongoose = require("mongoose");
+const { pick, JOB_FIELDS, COMPANY_FIELDS, escapeRegex } = require("../utils/input");
+const { openJobsFilter, withApplicationCounts } = require("../services/recruitmentData");
+const { DAY_MS, vietnamDayStart, applicationDays } = require("../utils/reportingDates");
 
 const employerController = {
   // ==========================================
@@ -21,12 +24,13 @@ const employerController = {
       const totalViews = jobs.reduce((sum, job) => sum + (job.views || 0), 0);
 
       // 2. Chạy 4 truy vấn đếm cùng lúc (Song song) để tối ưu tốc độ
-      const [totalJobs, activeJobs, totalApplications, newApplications] =
+      const [totalJobs, activeJobs, totalApplications, newApplications, offeredApplications] =
         await Promise.all([
           Job.countDocuments({ employerId }),
-          Job.countDocuments({ employerId, status: "active" }),
+          Job.countDocuments({ employerId, ...openJobsFilter() }),
           Application.countDocuments({ job: { $in: jobIds } }),
           Application.countDocuments({ job: { $in: jobIds }, status: "new" }),
+          Application.countDocuments({ job: { $in: jobIds }, status: "offered" }),
         ]);
 
       res.status(200).json({
@@ -35,9 +39,7 @@ const employerController = {
         totalApplications,
         newApplications,
         totalViews,
-        profileViews: 128, // Giả lập (có thể tính sau)
-        hiredThisMonth: 3, // Giả lập
-        responseRate: 78, // Giả lập
+        offeredApplications,
       });
     } catch (error) {
       res
@@ -52,10 +54,15 @@ const employerController = {
       const jobIds = (await Job.find({ employerId }, "_id")).map((j) => j._id);
 
       // Dùng Aggregation Pipeline để gom nhóm CV theo trạng thái
-      const applicationsByStatus = await Application.aggregate([
+      const now = new Date();
+      const start = new Date(vietnamDayStart(now).getTime() - 11 * DAY_MS);
+      const [applicationsByStatus, applicationsByDay] = await Promise.all([Application.aggregate([
         { $match: { job: { $in: jobIds } } },
         { $group: { _id: "$status", count: { $sum: 1 } } },
-      ]);
+      ]), Application.aggregate([
+        { $match: { job: { $in: jobIds }, createdAt: { $gte: start, $lte: now } } },
+        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "+07:00" } }, count: { $sum: 1 } } },
+      ])]);
 
       // Map lại dữ liệu cho khớp với frontend
       const statusMap = {
@@ -74,7 +81,7 @@ const employerController = {
 
       res.status(200).json({
         applicationsByStatus: formattedStatus,
-        applicationsByDay: [], // Thêm logic aggregate theo ngày sau
+        applicationsByDay: applicationDays(applicationsByDay, now),
       });
     } catch (error) {
       res.status(500).json({ message: "Lỗi vẽ biểu đồ", error: error.message });
@@ -91,10 +98,10 @@ const employerController = {
       let query = { employerId: req.user.id };
 
       if (status && status !== "all") query.status = status;
-      if (keyword) query.title = { $regex: keyword, $options: "i" };
+      if (keyword) query.title = { $regex: escapeRegex(keyword), $options: "i" };
 
       const jobs = await Job.find(query).sort({ createdAt: -1 });
-      res.status(200).json(jobs);
+      res.status(200).json(await withApplicationCounts(jobs));
     } catch (error) {
       res.status(500).json({ message: "Lỗi lấy danh sách việc làm" });
     }
@@ -104,8 +111,8 @@ const employerController = {
     try {
       const job = await Job.findOneAndUpdate(
         { _id: req.params.id, employerId: req.user.id },
-        req.body,
-        { new: true },
+        { $set: pick(req.body, JOB_FIELDS) },
+        { new: true, runValidators: true },
       );
       if (!job)
         return res.status(404).json({ message: "Không tìm thấy tin đăng" });
@@ -118,11 +125,15 @@ const employerController = {
   changeJobStatus: async (req, res) => {
     try {
       const { status } = req.body;
+      if (!["active", "paused", "closed", "draft"].includes(status)) {
+        return res.status(400).json({ message: "Trạng thái tin đăng không hợp lệ" });
+      }
       const job = await Job.findOneAndUpdate(
         { _id: req.params.id, employerId: req.user.id },
         { status },
-        { new: true },
+        { new: true, runValidators: true },
       );
+      if (!job) return res.status(404).json({ message: "Không tìm thấy tin đăng" });
       res.status(200).json({ success: true, id: job._id, status: job.status });
     } catch (error) {
       res.status(500).json({ message: "Lỗi đổi trạng thái" });
@@ -218,20 +229,24 @@ const employerController = {
       if (status === "offer") status = "offered";
       if (status === "reject") status = "rejected";
 
-      if (!status) {
+      if (status === undefined && note === undefined) {
         return res.status(400).json({
           success: false,
-          message: "Trường status là bắt buộc",
+          message: "Cần cung cấp trạng thái hoặc ghi chú",
           allowedStatuses,
         });
       }
 
-      if (!allowedStatuses.includes(status)) {
+      if (status !== undefined && !allowedStatuses.includes(status)) {
         return res.status(400).json({
           success: false,
           message: "Trạng thái hồ sơ không hợp lệ",
           allowedStatuses,
         });
+      }
+
+      if (note !== undefined && (typeof note !== "string" || note.length > 5000)) {
+        return res.status(400).json({ message: "Ghi chú phải là văn bản tối đa 5.000 ký tự" });
       }
 
    
@@ -257,7 +272,11 @@ const employerController = {
         });
       }
 
-      application.status = status;
+      if (status !== undefined && status !== application.status) {
+        application.status = status;
+        application.statusVersion = (application.statusVersion || 0) + 1;
+        application.statusUpdatedAt = new Date();
+      }
       if (note !== undefined) application.note = note;
 
       // Avoid unnecessary DB write if nothing changed
@@ -265,9 +284,6 @@ const employerController = {
         application.isModified &&
         (application.isModified("status") || application.isModified("note"));
       if (needsSave) await application.save();
-
-      // Add a debug header so frontend can identify the handler
-      res.setHeader("X-Api-Handler", "updateApplicationStatus");
 
       res.status(200).json({
         success: true,
@@ -287,6 +303,9 @@ const employerController = {
         },
       });
     } catch (error) {
+      if (error.name === "VersionError") {
+        return res.status(409).json({ message: "Hồ sơ vừa được cập nhật ở phiên khác. Vui lòng tải lại trước khi sửa." });
+      }
       res.status(500).json({
         success: false,
         message: "Lỗi cập nhật hồ sơ",
@@ -311,7 +330,7 @@ const employerController = {
 
   getCompanyProfile: async (req, res) => {
     try {
-      const profile = await Employer.findById(req.user.id).select("-password");
+      const profile = await Employer.findById(req.user.id).select("-password -totalJobs -totalApplications");
       res.status(200).json(profile);
     } catch (error) {
       res.status(500).json({ message: "Lỗi lấy thông tin công ty" });
@@ -320,9 +339,9 @@ const employerController = {
 
   updateCompanyProfile: async (req, res) => {
     try {
-      const profile = await Employer.findByIdAndUpdate(req.user.id, req.body, {
-        new: true,
-      }).select("-password");
+      const profile = await Employer.findByIdAndUpdate(req.user.id, { $set: pick(req.body, COMPANY_FIELDS) }, {
+        new: true, runValidators: true,
+      }).select("-password -totalJobs -totalApplications");
       res.status(200).json(profile);
     } catch (error) {
       res.status(500).json({ message: "Lỗi cập nhật công ty" });

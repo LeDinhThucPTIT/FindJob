@@ -88,6 +88,7 @@ const CompaniesPage = () => {
   // FETCH COMPANIES (Chạy lại khi bộ lọc hoặc trang thay đổi)
   // ==========================================
   useEffect(() => {
+    let active = true;
     const fetchCompaniesData = async () => {
       setLoading(true);
       try {
@@ -99,19 +100,25 @@ const CompaniesPage = () => {
           limit: pageSize,
         });
 
+        if (!active) return;
+
         const responseData = response.data || response;
         // Backend trả về object chứa { companies, total, page, totalPages }
         setCompanies(responseData.companies || []);
         setTotal(responseData.total || 0);
       } catch (err) {
+        if (!active) return;
+        setCompanies([]);
+        setTotal(0);
         console.error("Lỗi fetch companies:", err);
         message.error("Không thể tải danh sách công ty!");
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     };
 
     fetchCompaniesData();
+    return () => { active = false; };
   }, [debouncedKeyword, industry, location, page]);
 
   return (
@@ -248,13 +255,12 @@ const CompaniesPage = () => {
                       )}
                       <div className="company-detail-card__logo-wrap">
                         <img
-                          src={company.logo}
+                          src={company.logo || "/company-placeholder.svg"}
                           alt={company.companyName || company.name}
                           className="company-detail-card__logo"
                           onError={(e) => {
-                            e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(
-                              company.companyName || company.name || "Company",
-                            )}&background=00b14f&color=fff&size=80`;
+                            e.currentTarget.onerror = null;
+                            e.currentTarget.src = "/company-placeholder.svg";
                           }}
                         />
                       </div>

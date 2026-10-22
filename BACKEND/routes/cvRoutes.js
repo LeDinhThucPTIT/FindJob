@@ -5,6 +5,8 @@
 
 const express = require("express");
 const router = express.Router();
+const rateLimit = require("../middleware/rateLimit");
+const scoreLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, key: (req) => req.user.id });
 
 // Import Controller
 const cvController = require("../controllers/cvController");
@@ -21,19 +23,29 @@ const {
 } = require("../middleware/authMiddleware");
 
 // ==========================================
-// PUBLIC ROUTES (Ai cũng có quyền truy cập)
+// Tải CV yêu cầu xác thực và chỉ cho phép chủ sở hữu
 // ==========================================
 
 // Tải CV về máy hoặc xuất file PDF trực tiếp
-router.get("/:id/download", cvController.downloadCV);
-router.post("/:id/download", cvController.downloadCV);
+router.get("/:id/download", verifyToken, isCandidate, cvController.downloadCV);
+router.post("/:id/download", verifyToken, isCandidate, cvController.downloadCV);
 
 // ==========================================
 // PRIVATE ROUTES (Bắt buộc phải có Token và phải là [ỨNG VIÊN])
 // ==========================================
 
 // Chấm điểm CV AI (Cần đăng nhập)
-router.post("/score", verifyToken, cvscoreController.scoreCV);
+router.post("/score", verifyToken, isCandidate, scoreLimit, cvscoreController.scoreCV);
+
+const extractUpload = require('multer')({ storage: require('multer').memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 0 } });
+const extractLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, key: (req) => req.user.id });
+router.post('/extract', verifyToken, isCandidate, extractLimit, extractUpload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Vui lòng chọn file CV.' });
+    const result = await require('../services/cvExtraction').extractCv(req.file.buffer, req.file.originalname);
+    res.json(result);
+  } catch (error) { next(error); }
+});
 
 // Lấy danh sách toàn bộ CV của ứng viên đang đăng nhập
 router.get("/", verifyToken, isCandidate, cvController.getCVList);

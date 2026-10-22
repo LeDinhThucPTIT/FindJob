@@ -21,6 +21,7 @@ import {
   message,
   Empty,
   Modal,
+  Alert,
 } from "antd";
 import {
   PlusOutlined,
@@ -48,10 +49,10 @@ import {
 } from "@ant-design/icons";
 import StatsCard from "../components/employer/StatsCard";
 import ApplicationCard from "../components/employer/ApplicationCard";
+import NotificationBell from "../components/common/NotificationBell";
 import PostJobModal from "../components/employer/PostJobModal";
 import employerService from "../services/employerService";
 import authService from "../services/authService";
-import { mockDashboardStats } from "../constants/employerData";
 import companyService from "../services/companyService";
 import {
   formatSalary,
@@ -87,7 +88,7 @@ const APP_STATUS_CFG = {
 // ─── Mini Chart (CSS-only bar chart) ─────────────────────────────────────────
 
 const MiniBarChart = ({ data }) => {
-  const max = Math.max(...data.map((d) => d.count));
+  const max = Math.max(1, ...data.map((d) => d.count));
   return (
     <div className="mini-bar-chart">
       {data.map((d) => (
@@ -116,23 +117,43 @@ const normalizeCompanyProfile = (profile = {}) => {
 // ─── EmployerDashboardPage ────────────────────────────────────────────────────
 
 const EmployerDashboardPage = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [activeTab, setActiveTab] = useState("overview");
   const [stats, setStats] = useState(null);
   const [chartData, setChartData] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [applications, setApplications] = useState([]);
+  const targetApplicationId = new URLSearchParams(location.search).get("applicationId");
   const [companyProfile, setCompanyProfile] = useState(null);
 
   // Loading states
   const [loadingStats, setLoadingStats] = useState(true);
+  const [statsError, setStatsError] = useState(false);
+  const jobsRequest = useRef(0);
+  const appsRequest = useRef(0);
+  const overviewRequest = useRef(0);
   const [loadingJobs, setLoadingJobs] = useState(true);
   const [loadingApps, setLoadingApps] = useState(false);
+  useEffect(() => {
+    if (activeTab === "applications" && !loadingApps && targetApplicationId) {
+      document.getElementById(`application-${targetApplicationId}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [activeTab, loadingApps, applications, targetApplicationId]);
 
   // Filters
   const [jobStatus, setJobStatus] = useState("all");
   const [jobKeyword, setJobKeyword] = useState("");
   const [appJobId, setAppJobId] = useState("all");
   const [appStatus, setAppStatus] = useState("all");
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("tab") === "applications") {
+      setActiveTab("applications");
+      setAppJobId(params.get("jobId") || "all");
+      setAppStatus("all");
+    }
+  }, [location.search]);
 
   // Modals
   const [postModalOpen, setPostModalOpen] = useState(false);
@@ -152,77 +173,67 @@ const EmployerDashboardPage = () => {
 
   // ── Fetch data ──────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    const loadOverview = async () => {
-      const [s, c, cp] = await Promise.all([
-        employerService.getDashboardStats(),
-        employerService.getChartData(),
-        employerService.getCompanyProfile(),
+  const loadOverview = useCallback(async () => {
+    const requestId = ++overviewRequest.current;
+    setLoadingStats(true);
+    setStatsError(false);
+    try {
+      const [s, c] = await Promise.all([
+        employerService.getDashboardStats(), employerService.getChartData(),
       ]);
-      const normalizedProfile = normalizeCompanyProfile(cp);
-
-      console.debug("[EmployerDashboard] raw stats:", s);
-
-      // If backend returned the built-in mockDashboardStats (used in demos),
-      // don't show those placeholder numbers in the real UI.
-      const isMockResponse =
-        s &&
-        typeof s === "object" &&
-        s.hiredThisMonth === mockDashboardStats.hiredThisMonth &&
-        s.totalJobs === mockDashboardStats.totalJobs;
-
-      const normalizedStats = {
-        totalJobs: s?.totalJobs ?? 0,
-        activeJobs: s?.activeJobs ?? 0,
-        totalApplications: s?.totalApplications ?? 0,
-        newApplications: s?.newApplications ?? 0,
-        totalViews: s?.totalViews ?? 0,
-        profileViews: s?.profileViews ?? 0,
-        hiredThisMonth: isMockResponse ? 0 : (s?.hiredThisMonth ?? 0),
-        responseRate: s?.responseRate ?? 0,
-      };
-
-      setStats(normalizedStats);
+      if (requestId !== overviewRequest.current) return;
+      setStats(s);
       setChartData(c);
-      setCompanyProfile(normalizedProfile);
-      setProfileForm(normalizedProfile);
-      setLoadingStats(false);
-    };
-    loadOverview();
+    } catch {
+      if (requestId === overviewRequest.current) setStatsError(true);
+    } finally { if (requestId === overviewRequest.current) setLoadingStats(false); }
   }, []);
 
+  useEffect(() => {
+    loadOverview();
+    let active = true;
+    employerService.getCompanyProfile().then((cp) => {
+      if (!active) return;
+      const profile = normalizeCompanyProfile(cp);
+      setCompanyProfile(profile);
+      setProfileForm(profile);
+    }).catch(() => message.error("Không tải được hồ sơ công ty"));
+    return () => { active = false; overviewRequest.current++; };
+  }, [loadOverview]);
+
   const fetchJobs = useCallback(async () => {
+    const requestId = ++jobsRequest.current;
     setLoadingJobs(true);
-    const data = await employerService.getPostedJobs({
-      status: jobStatus,
-      keyword: jobKeyword,
-    });
-    setJobs(data);
-    setLoadingJobs(false);
+    try {
+      const data = await employerService.getPostedJobs({ status: jobStatus, keyword: jobKeyword });
+      if (requestId === jobsRequest.current) setJobs(data);
+    } catch (error) { if (requestId === jobsRequest.current) message.error(error.message || "Không tải được tin đăng"); }
+    finally { if (requestId === jobsRequest.current) setLoadingJobs(false); }
   }, [jobStatus, jobKeyword]);
 
   useEffect(() => {
     fetchJobs();
+    return () => { jobsRequest.current++; };
   }, [fetchJobs]);
 
   const fetchApplications = useCallback(async () => {
+    const requestId = ++appsRequest.current;
     setLoadingApps(true);
-    const data = await employerService.getApplications({
-      jobId: appJobId,
-      status: appStatus,
-    });
-    setApplications(data);
-    setLoadingApps(false);
+    try {
+      const data = await employerService.getApplications({ jobId: appJobId, status: appStatus });
+      if (requestId === appsRequest.current) setApplications(data);
+    } catch (error) { if (requestId === appsRequest.current) message.error(error.message || "Không tải được hồ sơ ứng tuyển"); }
+    finally { if (requestId === appsRequest.current) setLoadingApps(false); }
   }, [appJobId, appStatus]);
 
   useEffect(() => {
     if (activeTab === "applications") fetchApplications();
+    return () => { appsRequest.current++; };
   }, [activeTab, fetchApplications]);
 
   // ── Handlers ────────────────────────────────────────────────────────────────
 
   const handlePostJob = async (values) => {
-    console.log("🚀 [GỬI ĐI] Dữ liệu Form nhận được:", values);
     setPostingJob(true);
     try {
       if (editingJob) {
@@ -236,6 +247,7 @@ const EmployerDashboardPage = () => {
       setPostModalOpen(false);
       setEditingJob(null);
       fetchJobs();
+      loadOverview();
     } catch (error) {
       console.error("❌ [LỖI BACKEND]:", error);
       message.error("Có lỗi xảy ra, vui lòng thử lại");
@@ -245,18 +257,20 @@ const EmployerDashboardPage = () => {
   };
 
   const handleChangeJobStatus = async (job, newStatus) => {
-    const jobId = job._id || job.id;
-    await employerService.changeJobStatus(jobId, newStatus);
-    message.success(
-      `Đã ${newStatus === "active" ? "kích hoạt lại" : "tạm dừng"} tin tuyển dụng`,
-    );
-    fetchJobs();
+    try {
+      await employerService.changeJobStatus(job._id || job.id, newStatus);
+      message.success("Đã cập nhật trạng thái tin tuyển dụng");
+      fetchJobs(); loadOverview();
+    } catch (error) { message.error(error.message || "Không thể đổi trạng thái tin"); }
   };
 
   const handleDeleteJob = async (id) => {
-    await employerService.deleteJob(id);
-    message.success("Đã xóa tin tuyển dụng");
-    fetchJobs();
+    try {
+      await employerService.deleteJob(id);
+      message.success("Đã xóa tin tuyển dụng");
+      fetchJobs(); loadOverview();
+      if (activeTab === "applications") fetchApplications();
+    } catch (error) { message.error(error.message || "Không thể xóa tin tuyển dụng"); }
   };
 
   const handleAppStatusChange = (appId, newStatus, note) => {
@@ -267,6 +281,8 @@ const EmployerDashboardPage = () => {
           : a,
       ),
     );
+    fetchApplications();
+    loadOverview();
   };
   const [isDescExpanded, setIsDescExpanded] = useState(false); // Quản lý nút Xem thêm/Thu gọn mô tả
   const [savingProfile, setSavingProfile] = useState(false); // Quản lý loading khi lưu
@@ -512,11 +528,12 @@ const EmployerDashboardPage = () => {
             <div className="employer-header__left">
               <div className="employer-header__logo-wrap">
                 <img
-                  src={companyProfile?.logo}
+                  src={companyProfile?.logo || "/company-placeholder.svg"}
                   alt={companyProfile?.companyName || companyProfile?.name}
                   className="employer-header__logo"
                   onError={(e) => {
-                    e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(companyProfile?.companyName || companyProfile?.name || "C")}&background=00b14f&color=fff&size=80`;
+                    e.currentTarget.onerror = null;
+                    e.currentTarget.src = "/company-placeholder.svg";
                   }}
                 />
               </div>
@@ -533,6 +550,7 @@ const EmployerDashboardPage = () => {
               </div>
             </div>
             <div className="employer-header__right">
+              <NotificationBell />
               <Button
                 type="primary"
                 icon={<PlusOutlined />}
@@ -621,8 +639,11 @@ const EmployerDashboardPage = () => {
                 <div className="tab-loading">
                   <Spin size="large" />
                 </div>
+              ) : !stats ? (
+                <Alert type="error" showIcon message="Không tải được thống kê" action={<Button onClick={loadOverview}>Thử lại</Button>} />
               ) : (
                 <>
+                  {statsError && <Alert type="warning" message="Chưa cập nhật được thống kê mới nhất" action={<Button onClick={loadOverview}>Thử lại</Button>} />}
                   {/* Stats cards */}
                   <Row gutter={[16, 16]}>
                     <Col xs={12} sm={12} md={6}>
@@ -632,7 +653,6 @@ const EmployerDashboardPage = () => {
                         value={stats.activeJobs}
                         sub={`/ ${stats.totalJobs} tổng tin`}
                         color="green"
-                        trend={100}
                       />
                     </Col>
                     <Col xs={12} sm={12} md={6}>
@@ -640,9 +660,8 @@ const EmployerDashboardPage = () => {
                         icon="👥"
                         label="Tổng hồ sơ"
                         value={stats.totalApplications}
-                        sub={`${stats.newApplications} mới hôm nay`}
+                        sub={`${stats.newApplications} chưa xử lý`}
                         color="blue"
-                        trend={100}
                       />
                     </Col>
                     <Col xs={12} sm={12} md={6}>
@@ -650,19 +669,17 @@ const EmployerDashboardPage = () => {
                         icon="👁️"
                         label="Lượt xem tin"
                         value={stats.totalViews.toLocaleString()}
-                        sub={`${stats.profileViews} xem hồ sơ công ty`}
+                        sub="Tổng lượt xem các tin đã đăng"
                         color="purple"
-                        trend={100}
                       />
                     </Col>
                     <Col xs={12} sm={12} md={6}>
                       <StatsCard
                         icon="🏆"
-                        label="Đã tuyển dụng"
-                        value={stats.hiredThisMonth}
-                        sub="trong tháng này"
+                        label="Đã gửi offer"
+                        value={stats.offeredApplications}
+                        sub="Hồ sơ ở trạng thái đã offer"
                         color="orange"
-                        trend={100}
                       />
                     </Col>
                   </Row>
@@ -703,7 +720,7 @@ const EmployerDashboardPage = () => {
                       >
                         {chartData?.applicationsByStatus.map((item) => {
                           const pct = Math.round(
-                            (item.count / stats.totalApplications) * 100,
+                            stats.totalApplications ? (item.count / stats.totalApplications) * 100 : 0,
                           );
                           return (
                             <div key={item.status} className="status-dist-item">
@@ -922,6 +939,7 @@ const EmployerDashboardPage = () => {
                     <Col key={app.id || app._id} xs={24} md={12} xl={8}>
                       <ApplicationCard
                         application={app}
+                        highlighted={String(app.id || app._id) === targetApplicationId}
                         onStatusChange={handleAppStatusChange}
                       />
                     </Col>
@@ -1025,17 +1043,17 @@ const EmployerDashboardPage = () => {
                         {
                           icon: "📋",
                           label: "Tin đăng",
-                          value: companyProfile?.totalJobs,
+                          value: stats?.totalJobs ?? "—",
                         },
                         {
                           icon: "👥",
-                          label: "Ứng viên",
-                          value: companyProfile?.totalApplications,
+                          label: "Hồ sơ",
+                          value: stats?.totalApplications ?? "—",
                         },
                         {
                           icon: "🏆",
-                          label: "Đã tuyển",
-                          value: companyProfile?.totalHired,
+                          label: "Đã offer",
+                          value: stats?.offeredApplications ?? "—",
                         },
                       ].map((s) => (
                         <div key={s.label} className="company-profile-stat">

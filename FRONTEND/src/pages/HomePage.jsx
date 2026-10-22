@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Input, Select, Button, Row, Col, Card, Statistic, Spin } from "antd";
+import { Input, Select, Button, Row, Col, Card, Statistic, Spin, Alert, Empty } from "antd";
 import {
   SearchOutlined,
   EnvironmentOutlined,
@@ -19,11 +19,6 @@ import {
 } from "@ant-design/icons";
 import JobCard from "../components/job/JobCard";
 import jobService from "../services/jobService";
-import {
-  mockCategories,
-  mockCompanies,
-  mockStats,
-} from "../constants/mockData";
 import "./HomePage.css";
 
 const { Option } = Select;
@@ -36,17 +31,20 @@ const HomePage = () => {
   const [location, setLocation] = useState("");
   const [hotJobs, setHotJobs] = useState([]);
   const [loadingJobs, setLoadingJobs] = useState(true);
+  const [overview, setOverview] = useState(null);
+  const [dataError, setDataError] = useState(false);
+  const statValue = (key) => overview?.stats?.[key]?.toLocaleString() ?? "—";
 
   useEffect(() => {
-    const fetchHotJobs = async () => {
-      try {
-        const data = await jobService.getHotJobs(6);
-        setHotJobs(data);
-      } finally {
-        setLoadingJobs(false);
-      }
-    };
-    fetchHotJobs();
+    let active = true;
+    Promise.allSettled([jobService.getHotJobs(6), jobService.getOverview()]).then(([jobs, data]) => {
+      if (!active) return;
+      if (jobs.status === "fulfilled") setHotJobs(jobs.value);
+      if (data.status === "fulfilled") setOverview(data.value);
+      setDataError(jobs.status === "rejected" || data.status === "rejected");
+      setLoadingJobs(false);
+    });
+    return () => { active = false; };
   }, []);
 
   const handleSearch = () => {
@@ -62,6 +60,7 @@ const HomePage = () => {
 
   return (
     <div className="home-page">
+      {dataError && <Alert type="warning" showIcon message="Chưa tải được một phần dữ liệu. Vui lòng tải lại trang để thử lại." />}
       {/* ===== HERO BANNER ===== */}
       <section className="hero">
         <div className="hero__bg">
@@ -74,7 +73,7 @@ const HomePage = () => {
             <div className="hero__badge">
               <FireFilled style={{ color: "#ff6b35" }} />
               <span>
-                Hơn {mockStats.newJobsToday.toLocaleString()} việc làm mới hôm
+                {statValue("newJobsToday")} việc làm mới hôm
                 nay
               </span>
             </div>
@@ -84,7 +83,7 @@ const HomePage = () => {
               <br /> với bạn ngay hôm nay
             </h1>
             <p className="hero__subtitle">
-              Kết nối với hàng ngàn nhà tuyển dụng hàng đầu. Xây dựng sự nghiệp
+              Kết nối với nhà tuyển dụng. Xây dựng sự nghiệp
               của bạn cùng TopCV.
             </p>
 
@@ -157,23 +156,23 @@ const HomePage = () => {
             {[
               {
                 icon: <SolutionOutlined />,
-                value: mockStats.totalJobs.toLocaleString() + "+",
+                value: statValue("totalJobs"),
                 label: "Việc làm đang tuyển",
               },
               {
                 icon: <TeamOutlined />,
-                value: mockStats.totalCompanies.toLocaleString() + "+",
-                label: "Công ty uy tín",
+                value: statValue("totalCompanies"),
+                label: "Nhà tuyển dụng đã đăng ký",
               },
               {
                 icon: <RocketOutlined />,
-                value: mockStats.totalCandidates.toLocaleString() + "+",
+                value: statValue("totalCandidates"),
                 label: "Ứng viên đã đăng ký",
               },
               {
                 icon: <StarFilled />,
-                value: "4.8/5",
-                label: "Đánh giá từ người dùng",
+                value: statValue("verifiedCompanies"),
+                label: "Doanh nghiệp đã xác thực",
               },
             ].map((stat) => (
               <div key={stat.label} className="home-stat-item">
@@ -203,14 +202,15 @@ const HomePage = () => {
               Xem tất cả <RightOutlined />
             </button>
           </div>
+          {overview && overview.categories.length === 0 && <Empty description="Chưa có ngành nghề đang tuyển" />}
           <Row gutter={[16, 16]}>
-            {mockCategories.map((cat) => (
+            {(overview?.categories || []).map((cat) => (
               <Col key={cat.key} xs={12} sm={8} md={6} lg={6}>
                 <div
                   className="category-card"
-                  onClick={() => navigate(`/jobs?category=${cat.label}`)}
+                  onClick={() => navigate(`/jobs?category=${encodeURIComponent(cat.label)}`)}
                 >
-                  <span className="category-card__icon">{cat.icon}</span>
+                  <span className="category-card__icon">💼</span>
                   <div className="category-card__label">{cat.label}</div>
                   <div className="category-card__count">
                     {cat.count.toLocaleString()} việc làm
@@ -247,10 +247,10 @@ const HomePage = () => {
             <div className="home-loading">
               <Spin size="large" />
             </div>
-          ) : (
+          ) : hotJobs.length === 0 ? <Empty description="Chưa có việc làm nổi bật" /> : (
             <Row gutter={[20, 20]}>
               {hotJobs.map((job) => (
-                <Col key={job.id} xs={24} sm={12} lg={8}>
+                <Col key={job._id || job.id} xs={24} sm={12} lg={8}>
                   <JobCard job={job} />
                 </Col>
               ))}
@@ -264,9 +264,9 @@ const HomePage = () => {
         <div className="container">
           <div className="section-header">
             <div>
-              <h2 className="section-title">Nhà tuyển dụng hàng đầu</h2>
+              <h2 className="section-title">Nhà tuyển dụng đang hoạt động</h2>
               <p className="section-subtitle">
-                Các công ty uy tín đang tuyển dụng tích cực
+                Các công ty có nhiều vị trí đang tuyển
               </p>
             </div>
             <button
@@ -276,10 +276,13 @@ const HomePage = () => {
               Xem tất cả <RightOutlined />
             </button>
           </div>
+          {overview && overview.companies.length === 0 && <Empty description="Chưa có công ty đang tuyển dụng" />}
           <Row gutter={[20, 20]}>
-            {mockCompanies.map((company) => (
+            {(overview?.companies || []).map((company) => (
               <Col key={company._id || company.id} xs={12} sm={8} md={6} lg={4}>
-                <div className="company-card">
+                <div className="company-card" role="link" tabIndex={0}
+                  onClick={() => navigate(`/companies/${company._id}`)}
+                  onKeyDown={(event) => { if (event.key === "Enter") navigate(`/companies/${company._id}`); }}>
                   <img
                     src={company.logo}
                     alt={company.companyName || company.name}
@@ -307,15 +310,15 @@ const HomePage = () => {
           <div className="section-header center">
             <h2 className="section-title">Tại sao chọn TopCV?</h2>
             <p className="section-subtitle">
-              Nền tảng tìm việc làm hàng đầu Việt Nam
+              Kết nối ứng viên và nhà tuyển dụng
             </p>
           </div>
           <Row gutter={[32, 32]}>
             {[
               {
                 icon: "🎯",
-                title: "Gợi ý việc làm thông minh",
-                desc: "Thuật toán AI phân tích hồ sơ và đề xuất những vị trí phù hợp nhất với kỹ năng của bạn.",
+                title: "Hỗ trợ cải thiện CV",
+                desc: "AI phân tích nội dung CV theo mô tả công việc và đề xuất cải thiện.",
               },
               {
                 icon: "⚡",
@@ -324,13 +327,13 @@ const HomePage = () => {
               },
               {
                 icon: "🏆",
-                title: "Công ty uy tín, đã xác thực",
-                desc: "Tất cả doanh nghiệp trên TopCV đều được kiểm tra và xác thực thông tin pháp lý.",
+                title: "Thông tin công ty rõ ràng",
+                desc: "Xem ngành nghề, địa điểm và thông tin doanh nghiệp trước khi ứng tuyển.",
               },
               {
                 icon: "📊",
-                title: "Theo dõi hồ sơ realtime",
-                desc: "Biết chính xác nhà tuyển dụng đã xem CV của bạn hay chưa, khi nào.",
+                title: "Theo dõi hồ sơ ứng tuyển",
+                desc: "Xem trạng thái xử lý hồ sơ do nhà tuyển dụng cập nhật.",
               },
             ].map((feature) => (
               <Col key={feature.title} xs={24} sm={12} md={6}>

@@ -5,6 +5,7 @@
 import apiClient from "./api";
 
 const authService = {
+  loginWithGoogle: async (code) => apiClient.post("/auth/google", { code }),
   login: async (credentials) => {
     // credentials là object { email, password }
     return await apiClient.post("/auth/login", credentials);
@@ -16,7 +17,7 @@ const authService = {
   },
 
   logout: async () => {
-    return { success: true };
+    return await apiClient.post("/auth/logout");
   },
 
   getProfile: async () => {

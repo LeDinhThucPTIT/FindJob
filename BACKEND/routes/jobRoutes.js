@@ -23,6 +23,8 @@ router.get("/hot", jobController.getHotJobs);
 
 // Lấy việc làm gợi ý
 router.get("/recommended", jobController.getRecommendedJobs);
+router.get("/overview", require("../controllers/overviewController").getOverview);
+router.get("/:id/application", verifyToken, isCandidate, jobController.getMyApplication);
 
 // Lấy chi tiết 1 việc làm
 // (Lưu ý: Route có param /:id bắt buộc phải để ở DƯỚI các route tĩnh như /hot, /recommended)

@@ -8,6 +8,8 @@ const userSchema = new mongoose.Schema(
     phone: { type: String },
     avatar: { type: String },
     role: { type: String, default: "candidate" },
+    authVersion: { type: Number, default: 0 },
+    defaultCvId: { type: mongoose.Schema.Types.ObjectId, ref: "CV", default: null },
 
     // Đưa các trường này ra lớp ngoài cùng để khớp với req.body
     headline: { type: String },

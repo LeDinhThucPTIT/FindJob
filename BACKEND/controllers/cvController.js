@@ -1,4 +1,7 @@
 const CV = require("../models/CV");
+const User = require("../models/User");
+const defaultCv = require("../services/defaultCv");
+const { pick } = require("../utils/input");
 const fs = require("fs");
 const path = require("path");
 const puppeteer = require("puppeteer");
@@ -20,12 +23,10 @@ const cvController = {
   // Lấy danh sách CV
   getCVList: async (req, res) => {
     try {
-      const cvs = await CV.find({ userId: req.user.id }).sort({
-        updatedAt: -1,
-      });
+      const cvs = await defaultCv.list(req.user.id);
       res.status(200).json(cvs);
     } catch (error) {
-      res.status(500).json({ message: "Lỗi khi lấy danh sách CV", error });
+      res.status(error.status || 500).json({ message: "Lỗi khi lấy danh sách CV", error });
     }
   },
 
@@ -37,10 +38,10 @@ const cvController = {
         userId: req.user.id,
       });
       if (!cv) return res.status(404).json({ message: "Không tìm thấy CV" });
-      res.status(200).json(cv);
+      res.status(200).json(await defaultCv.annotate(req.user.id, cv));
     } catch (error) {
       res
-        .status(500)
+        .status(error.status || 500)
         .json({ message: "Lỗi khi lấy thông tin CV", error: error.message });
     }
   },
@@ -49,21 +50,20 @@ const cvController = {
   createCV: async (req, res) => {
     try {
       const { name, template, data } = req.body;
-      const existingCVs = await CV.countDocuments({ userId: req.user.id });
 
       const newCV = new CV({
         userId: req.user.id,
         name: name || "CV Mới",
         template: template || "modern",
         type: "created",
-        isDefault: existingCVs === 0,
+        isDefault: false,
         data,
       });
 
       const savedCV = await newCV.save();
-      res.status(201).json(savedCV);
+      res.status(201).json(await defaultCv.annotate(req.user.id, savedCV));
     } catch (error) {
-      res.status(500).json({ message: "Lỗi khi tạo CV", error });
+      res.status(error.status || 500).json({ message: "Lỗi khi tạo CV", error });
     }
   },
 
@@ -72,14 +72,14 @@ const cvController = {
     try {
       const updatedCV = await CV.findOneAndUpdate(
         { _id: req.params.id, userId: req.user.id },
-        { $set: req.body },
-        { new: true },
+        { $set: pick(req.body, ["name", "template", "data"]) },
+        { new: true, runValidators: true },
       );
       if (!updatedCV)
         return res.status(404).json({ message: "Không tìm thấy CV" });
-      res.status(200).json(updatedCV);
+      res.status(200).json(await defaultCv.annotate(req.user.id, updatedCV));
     } catch (error) {
-      res.status(500).json({ message: "Lỗi khi cập nhật", error });
+      res.status(error.status || 500).json({ message: "Lỗi khi cập nhật", error });
     }
   },
 
@@ -89,7 +89,6 @@ const cvController = {
       if (!req.file)
         return res.status(400).json({ message: "Vui lòng chọn file" });
 
-      const existingCVs = await CV.countDocuments({ userId: req.user.id });
 
       const fileUrl = `${req.protocol}://${req.get("host")}/uploads/cvs/${req.file.filename}`;
 
@@ -97,7 +96,7 @@ const cvController = {
         userId: req.user.id,
         name: req.file.originalname.replace(/\.[^/.]+$/, ""), // Xóa đuôi file
         type: "uploaded",
-        isDefault: existingCVs === 0,
+        isDefault: false,
         fileUrl: fileUrl, // URL trả về cho frontend
         fileName: req.file.filename,
         fileSize: req.file.size,
@@ -105,9 +104,9 @@ const cvController = {
       });
 
       const savedCV = await newCV.save();
-      res.status(201).json(savedCV);
+      res.status(201).json(await defaultCv.annotate(req.user.id, savedCV));
     } catch (error) {
-      res.status(500).json({ message: "Lỗi khi upload file", error });
+      res.status(error.status || 500).json({ message: "Lỗi khi upload file", error });
     }
   },
 
@@ -126,24 +125,28 @@ const cvController = {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       }
 
+      await User.updateOne({ _id: req.user.id, defaultCvId: cv._id }, { $set: { defaultCvId: null } });
+      await defaultCv.resolveDefaultId(req.user.id);
       res.status(200).json({ success: true });
     } catch (error) {
-      res.status(500).json({ message: "Lỗi khi xóa", error });
+      res.status(error.status || 500).json({ message: "Lỗi khi xóa", error });
     }
   },
 
   // Set Default
   setDefaultCV: async (req, res) => {
     try {
-      await CV.updateMany({ userId: req.user.id }, { isDefault: false });
-      const updatedCV = await CV.findOneAndUpdate(
-        { _id: req.params.id, userId: req.user.id },
-        { isDefault: true },
-        { new: true },
-      );
-      res.status(200).json(updatedCV);
+      const target = await CV.findOne({ _id: req.params.id, userId: req.user.id });
+      if (!target) return res.status(404).json({ message: "Không tìm thấy CV" });
+      const account = await User.findOneAndUpdate({ _id: req.user.id }, { $set: { defaultCvId: target._id } }, { returnDocument: "after" });
+      if (!account) return res.status(401).json({ message: "Không tìm thấy tài khoản" });
+      if (!(await CV.exists({ _id: target._id, userId: req.user.id }))) {
+        await defaultCv.resolveDefaultId(req.user.id);
+        return res.status(404).json({ message: "CV vừa được xóa. Vui lòng chọn CV khác." });
+      }
+      res.status(200).json(await defaultCv.annotate(req.user.id, target));
     } catch (error) {
-      res.status(500).json({ message: "Lỗi set mặc định", error });
+      res.status(error.status || 500).json({ message: "Lỗi set mặc định", error });
     }
   },
 
@@ -157,7 +160,7 @@ const cvController = {
       }
 
       const cv = await CV.findOneAndUpdate(
-        { _id: req.params.id }, // Không check userId để NTD có thể tải nếu có link
+        { _id: req.params.id, userId: req.user.id },
         { $inc: { downloads: 1 } },
         { new: true },
       );

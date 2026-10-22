@@ -3,8 +3,8 @@ const path = require("path");
 const fs = require("fs");
 
 // 1. Đảm bảo các thư mục upload tồn tại
-const cvDir = "uploads/cvs";
-const imgDir = "uploads/img";
+const cvDir = path.join(__dirname, "../uploads/cvs");
+const imgDir = path.join(__dirname, "../uploads/img");
 
 if (!fs.existsSync(cvDir)) fs.mkdirSync(cvDir, { recursive: true });
 if (!fs.existsSync(imgDir)) fs.mkdirSync(imgDir, { recursive: true });
@@ -28,7 +28,7 @@ const cvFileFilter = (req, file, cb) => {
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ];
-  if (allowedTypes.includes(file.mimetype)) {
+  if (allowedTypes.includes(file.mimetype) && /\.(pdf|doc|docx)$/i.test(file.originalname)) {
     cb(null, true);
   } else {
     cb(new Error("Chỉ hỗ trợ định dạng PDF, DOC, DOCX"), false);
@@ -56,7 +56,7 @@ const imgStorage = multer.diskStorage({
 
 const imgFileFilter = (req, file, cb) => {
   // Chỉ cho phép các file có mimetype bắt đầu bằng "image/"
-  if (file.mimetype.startsWith("image/")) {
+  if (["image/jpeg", "image/png", "image/webp"].includes(file.mimetype) && /\.(jpe?g|png|webp)$/i.test(file.originalname)) {
     cb(null, true);
   } else {
     cb(new Error("Chỉ hỗ trợ định dạng ảnh (JPG, PNG, JPEG,...)"), false);

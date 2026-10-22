@@ -5,6 +5,11 @@ const app = express();
 const port = process.env.PORT || 5000;
 const connectDB = require("./config/db");
 const cors = require("cors");
+const { getJwtSecret } = require("./config/security");
+const { verifyToken } = require("./middleware/authMiddleware");
+const { getCvFile } = require("./controllers/fileController");
+getJwtSecret();
+app.disable("x-powered-by");
 
 const allowedOrigins = [
   "http://localhost:3000",
@@ -18,8 +23,7 @@ const corsOptions = {
     // Cho phép các request không có origin (ví dụ như Postman, cURL) hoặc nằm trong danh sách được phép
     if (
       !origin ||
-      allowedOrigins.includes(origin) ||
-      origin.startsWith("http://localhost:")
+      allowedOrigins.includes(origin)
     ) {
       callback(null, true);
     } else {
@@ -29,12 +33,11 @@ const corsOptions = {
   credentials: true,
 };
 
-app.use(cors(corsOptions));
+app.use(cors({ ...corsOptions, exposedHeaders: ["Content-Disposition"] }));
 
-connectDB();
-
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader(
     "Content-Security-Policy",
     "default-src 'self'; connect-src 'self' http://localhost:5000 ws://localhost:5000; img-src 'self' data: blob: https://ui-avatars.com",
@@ -42,7 +45,8 @@ app.use((req, res, next) => {
   next();
 });
 // Phục vụ tệp CV upload trong thư mục uploads/cvs
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.get("/uploads/cvs/:filename", verifyToken, getCvFile);
+app.use("/uploads/img", express.static(path.join(__dirname, "uploads/img")));
 
 // Routes
 const routes = require("./routes");
@@ -50,15 +54,19 @@ routes(app);
 
 // Global Error Handler Middleware
 app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
   console.error("Global Error Handler:", err.message || err);
-  const status = err.status || err.statusCode || 500;
+  const status = err.name === "ValidationError" || err.name === "CastError" ? 400 :
+    err.code === "LIMIT_FILE_SIZE" ? 413 : err.status || err.statusCode || 500;
   res.status(status).json({
     success: false,
-    message: err.message || "Lỗi máy chủ nội bộ",
+    message: status >= 500 ? "Lỗi máy chủ nội bộ" : err.message,
   });
 });
 
 // Start server
-app.listen(port, () => {
-  console.log(`Server listening at http://localhost:${port}`);
+connectDB().then(() => {
+  app.listen(port, () => {
+    console.log(`Server listening at http://localhost:${port}`);
+  });
 });

@@ -1,28 +1,26 @@
+const { candidateApplications, withApplicationCounts } = require("../services/recruitmentData");
 // controllers/authController.js
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+const { getJwtSecret } = require("../config/security");
+const { issueSession, accountModel, replacePassword } = require("../services/sessions");
+const AuthSession = require("../models/AuthSession");
 const nodemailer = require("nodemailer");
 const User = require("../models/User");
 const Employer = require("../models/Employer");
 const OTP = require("../models/OTP");
 const { OAuth2Client } = require("google-auth-library");
 // Hàm tạo Token dùng chung
-const generateToken = (id, role) => {
-  return jwt.sign(
-    { id, role },
-    process.env.JWT_SECRET || "topcv_secret_key_2026_default",
-    {
-      expiresIn: "7d", // Token sống trong 7 ngày
-    },
-  );
-};
-
 // ==========================================
 // REGISTER - Đăng ký
 // ==========================================
 exports.register = async (req, res) => {
   try {
     const { name, companyName, email, phone, password, role } = req.body;
+    if (typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+        typeof password !== "string" || password.length < 8 || password.length > 128) {
+      return res.status(400).json({ message: "Email không hợp lệ hoặc mật khẩu chưa đủ 8–128 ký tự." });
+    }
 
     // 1. Kiểm tra dữ liệu đầu vào
     if ((!name && !companyName) || !email || !password || !phone) {
@@ -58,7 +56,7 @@ exports.register = async (req, res) => {
       });
 
       await newUser.save();
-      token = generateToken(newUser._id, newUser.role);
+      token = await issueSession(newUser);
     } else {
       newUser = new User({
         name,
@@ -69,7 +67,7 @@ exports.register = async (req, res) => {
       });
 
       await newUser.save();
-      token = generateToken(newUser._id, newUser.role);
+      token = await issueSession(newUser);
     }
 
     // 4. Trả về kết quả cho Frontend
@@ -100,7 +98,7 @@ exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
+    if (typeof email !== "string" || typeof password !== "string" || !email || !password) {
       return res
         .status(400)
         .json({ message: "Vui lòng nhập email và mật khẩu" });
@@ -130,7 +128,7 @@ exports.login = async (req, res) => {
     }
 
     // 5. Tạo token và trả về
-    const token = generateToken(user._id, user.role);
+    const token = await issueSession(user);
 
     res.status(200).json({
       success: true,
@@ -182,7 +180,7 @@ exports.loginWithGoogle = async (req, res) => {
       // 3. TẠO MỚI (Đã sửa để khớp hoàn toàn với userSchema của bạn)
 
       const randomPassword =
-        Math.random().toString(36).slice(-10) + Date.now().toString();
+        await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
 
       user = await User.create({
         name: name,
@@ -194,11 +192,7 @@ exports.loginWithGoogle = async (req, res) => {
     }
 
     // 4. Cấp JWT của hệ thống (Sử dụng _id của MongoDB)
-    const systemToken = jwt.sign(
-      { id: user._id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" },
-    );
+    const systemToken = await issueSession(user);
 
     // 5. Trả kết quả về Frontend
     return res.status(200).json({
@@ -232,22 +226,24 @@ exports.getProfile = async (req, res) => {
     // Candidate => lấy từ bảng User
     if (req.user.role === "candidate") {
       const user = await User.findById(req.user.id)
-        .select("-password")
+        .select("-password -authVersion")
         .populate("savedJobs")
-        .populate("appliedJobs")
         .lean();
 
       if (!user) {
         return res.status(404).json({ message: "Không tìm thấy candidate" });
       }
 
+      [user.appliedJobs, user.savedJobs] = await Promise.all([
+        candidateApplications(req.user.id), withApplicationCounts(user.savedJobs),
+      ]);
       return res.status(200).json({ user });
     }
 
     // Employer => lấy từ bảng Employer
     if (req.user.role === "employer") {
       const employer = await Employer.findById(req.user.id)
-        .select("-password")
+        .select("-password -authVersion")
         .lean();
 
       if (!employer) {
@@ -309,13 +305,13 @@ exports.updateProfile = async (req, res) => {
         req.user.id,
         { $set: updateData },
         { new: true, runValidators: true },
-      ).select("-password");
+      ).select("-password -authVersion");
     } else {
       updatedAccount = await User.findByIdAndUpdate(
         req.user.id,
         { $set: updateData },
         { new: true, runValidators: true },
-      ).select("-password");
+      ).select("-password -authVersion");
     }
 
     if (!updatedAccount) {
@@ -338,26 +334,23 @@ exports.changePassword = async (req, res) => {
   try {
     const { oldPassword, newPassword, confirmNewPassword } = req.body;
 
-    if (!oldPassword || !newPassword) {
+    if (typeof oldPassword !== "string" || !oldPassword || !newPassword) {
       return res
         .status(400)
         .json({ message: "Vui lòng nhập đầy đủ các trường mật khẩu!" });
     }
 
-    if (newPassword.length < 6) {
+    if (typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 128) {
       return res
         .status(400)
-        .json({ message: "Mật khẩu mới phải có ít nhất 6 ký tự!" });
+        .json({ message: "Mật khẩu mới phải có 8–128 ký tự!" });
     }
 
     if (confirmNewPassword && newPassword !== confirmNewPassword) {
       return res.status(400).json({ message: "Mật khẩu xác nhận không khớp!" });
     }
 
-    let user = await User.findById(req.user.id);
-    if (!user) {
-      user = await Employer.findById(req.user.id);
-    }
+    const user = await accountModel(req.user.role).findById(req.user.id);
 
     if (!user) {
       return res.status(404).json({ message: "Không tìm thấy người dùng!" });
@@ -371,9 +364,8 @@ exports.changePassword = async (req, res) => {
     }
 
     const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(newPassword, salt);
-
-    await user.save();
+    const updated = await replacePassword(user, await bcrypt.hash(newPassword, salt));
+    if (!updated) return res.status(409).json({ message: "Mật khẩu vừa được thay đổi. Vui lòng đăng nhập lại." });
 
     return res.status(200).json({ message: "Đổi mật khẩu thành công!" });
   } catch (error) {
@@ -402,13 +394,13 @@ exports.updateAvatar = async (req, res) => {
         req.user.id,
         { avatar: fileUrl },
         { new: true },
-      ).select("-password");
+      ).select("-password -authVersion");
     } else if (req.user.role === "employer") {
       updatedAccount = await Employer.findByIdAndUpdate(
         req.user.id,
         { logo: fileUrl },
         { new: true },
-      ).select("-password");
+      ).select("-password -authVersion");
     } else {
       return res.status(403).json({ message: "Quyền truy cập không hợp lệ!" });
     }
@@ -444,7 +436,7 @@ exports.sendOTP = async (req, res) => {
   try {
     const { email } = req.body;
 
-    if (!email) {
+    if (typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ message: "Vui lòng nhập email!" });
     }
 
@@ -452,19 +444,20 @@ exports.sendOTP = async (req, res) => {
     const user = await User.findOne({ email });
     const employer = await Employer.findOne({ email });
     if (!user && !employer) {
-      return res.status(404).json({
-        message: "Email này không tồn tại trong hệ thống.",
+      return res.status(200).json({
+        success: true,
+        message: "Nếu email tồn tại, mã xác thực sẽ được gửi đến bạn.",
       });
     }
 
-    await OTP.deleteMany({ email });
-
     // Tạo OTP mới
-    const otp = Math.floor(100000 + Math.random() * 900000).toString(); // OTP 6 chữ số
+    const otp = crypto.randomInt(100000, 1000000).toString();
+    const otpHash = crypto.createHmac("sha256", getJwtSecret()).update(otp).digest("hex");
 
     // Lưu OTP vào cơ sở dữ liệu
-    const newOTP = new OTP({ email, otp });
-    await newOTP.save();
+    await OTP.findOneAndUpdate({ email }, {
+      otp: otpHash, attempts: 0, createdAt: new Date(),
+    }, { upsert: true, runValidators: true });
 
     // Gửi OTP qua email
     const transporter = nodemailer.createTransport({
@@ -483,7 +476,7 @@ exports.sendOTP = async (req, res) => {
     });
     res.status(200).json({
       success: true,
-      message: "Mã OTP đã được gửi đến email của bạn.",
+      message: "Nếu email tồn tại, mã xác thực sẽ được gửi đến bạn.",
     });
   } catch (error) {
     console.error("Lỗi sendOTP:", error);
@@ -497,14 +490,17 @@ exports.sendOTP = async (req, res) => {
 exports.resetPassword = async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;
-    if (!email || !otp || !newPassword) {
+    if (typeof email !== "string" || typeof otp !== "string" || !/^\d{6}$/.test(otp) ||
+        typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 128) {
       return res.status(400).json({
         success: false,
-        message: "Vui lòng điền đầy đủ thông tin.",
+        message: "Thông tin không hợp lệ. Mật khẩu mới phải có 8–128 ký tự.",
       });
     }
-    const otpRecord = await OTP.findOne({ email, otp });
-    if (!otpRecord) {
+    const activeFilter = { email, createdAt: { $gt: new Date(Date.now() - 300000) }, attempts: { $lt: 5 } };
+    const otpRecord = await OTP.findOneAndUpdate(activeFilter, { $inc: { attempts: 1 } }, { new: true });
+    const otpHash = crypto.createHmac("sha256", getJwtSecret()).update(otp).digest("hex");
+    if (!otpRecord || otpRecord.otp !== otpHash) {
       return res.status(400).json({
         success: false,
         message: "Mã OTP không hợp lệ hoặc đã hết hạn.",
@@ -518,12 +514,17 @@ exports.resetPassword = async (req, res) => {
       isEmployer = true;
     }
 
-    const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(newPassword, salt);
-    await user.save();
+    if (!user) return res.status(400).json({ message: "Mã OTP không hợp lệ hoặc đã hết hạn." });
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    // Consume atomically: simultaneous requests cannot reuse the same code.
+    const consumed = await OTP.findOneAndDelete({
+      _id: otpRecord._id, otp: otpHash, createdAt: activeFilter.createdAt,
+    });
+    if (!consumed) return res.status(400).json({ message: "Mã OTP không hợp lệ hoặc đã hết hạn." });
+    const updated = await replacePassword(user, hashedPassword);
+    if (!updated) return res.status(409).json({ message: "Mật khẩu vừa được thay đổi. Vui lòng yêu cầu mã OTP mới." });
 
     // Xóa OTP sau khi đổi mật khẩu thành công
-    await OTP.deleteMany({ email });
 
     return res.status(200).json({
       success: true,
@@ -536,4 +537,9 @@ exports.resetPassword = async (req, res) => {
       message: "Lỗi server khi đổi mật khẩu. Vui lòng thử lại sau.",
     });
   }
+};
+
+exports.logout = async (req, res) => {
+  await AuthSession.deleteOne({ _id: req.user.sid, account: req.user.id, role: req.user.role });
+  res.json({ success: true, message: "Đã đăng xuất phiên hiện tại." });
 };

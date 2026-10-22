@@ -139,8 +139,23 @@ const cvService = {
     };
   },
 
-  scoreCV: async (data) => {
-    return await apiClient.post(`${CV_ENDPOINT}/score`, data);
+  getPrivateFile: async (url) => {
+    const pathname = new URL(url, apiClient.defaults.baseURL).pathname;
+    if (!/^\/uploads\/cvs\/cv-[\w-]+\.(pdf|doc|docx)$/i.test(pathname)) {
+      throw new Error("Đường dẫn CV không hợp lệ");
+    }
+    return apiClient.get(pathname, { responseType: "blob" });
+  },
+
+  scoreCV: async (data, signal) => {
+    return await apiClient.post(`${CV_ENDPOINT}/score`, data, { timeout: 90000, signal });
+  },
+  extractText: async (file, signal) => {
+    const data = new FormData();
+    data.append('file', file);
+    return apiClient.post(`${CV_ENDPOINT}/extract`, data, {
+      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 30000, signal,
+    });
   },
 };
 

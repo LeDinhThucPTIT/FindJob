@@ -3,7 +3,7 @@
 // Card hiển thị 1 tin tuyển dụng
 // ===========================
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { Tag, Tooltip, message } from "antd";
 import {
@@ -21,10 +21,12 @@ import { useAuth } from "../../hooks/useAuth";
 import "./JobCard.css";
 
 const JobCard = ({ job, view = "list" }) => {
-  const { isAuthenticated, user } = useAuth();
-  const [saved, setSaved] = useState(
-    user?.savedJobs?.includes(job.id) || false,
-  );
+  const { isAuthenticated, user, updateUser } = useAuth();
+  const jobId = String(job._id || job.id);
+  const savedFromServer = typeof job.isSaved === "boolean" ? job.isSaved :
+    (user?.savedJobs || []).some((item) => String(item?._id || item?.id || item) === jobId);
+  const [saved, setSaved] = useState(savedFromServer);
+  useEffect(() => setSaved(savedFromServer), [jobId, savedFromServer]);
   const [savingLoading, setSavingLoading] = useState(false);
   const jobTypeInfo = getJobTypeLabel(job.jobType);
 
@@ -40,11 +42,19 @@ const JobCard = ({ job, view = "list" }) => {
       message.warning("Vui lòng đăng nhập để lưu việc làm");
       return;
     }
+    if (user?.role !== "candidate") {
+      message.warning("Chỉ ứng viên mới có thể lưu việc làm");
+      return;
+    }
     setSavingLoading(true);
     try {
-      await jobService.saveJob(job.id || job._id); // Hỗ trợ cả id giả và _id thật của MongoDB
-      setSaved(!saved);
-      message.success(saved ? "Đã bỏ lưu việc làm" : "Đã lưu việc làm");
+      const result = await jobService.saveJob(jobId, !saved);
+      setSaved(result.isSaved);
+      updateUser((current) => {
+        const others = (current.savedJobs || []).filter((item) => String(item?._id || item?.id || item) !== jobId);
+        return { savedJobs: result.isSaved ? [...others, job] : others };
+      });
+      message.success(result.isSaved ? "Đã lưu việc làm" : "Đã bỏ lưu việc làm");
     } catch {
       message.error("Có lỗi xảy ra, thử lại sau");
     } finally {
@@ -87,13 +97,12 @@ const JobCard = ({ job, view = "list" }) => {
         {/* Company logo */}
         <div className="job-card__logo-wrap">
           <img
-            src={company.logo}
+            src={company.logo || "/company-placeholder.svg"}
             alt={company.companyName || company.name}
             className="job-card__logo"
             onError={(e) => {
-              e.target.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(
-                company.companyName || company.name || "Company",
-              )}&background=00b14f&color=fff&size=80`;
+              e.currentTarget.onerror = null;
+              e.currentTarget.src = "/company-placeholder.svg";
             }}
           />
           {company.verified && (

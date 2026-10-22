@@ -1,9 +1,11 @@
+const { withCompanyJobCounts } = require("../services/recruitmentData");
 // ===========================
 // controllers/companyController.js
 // Dùng Employer làm Company luôn
 // ===========================
 
 const Employer = require("../models/Employer");
+const { PUBLIC_COMPANY_FIELDS, escapeRegex, positiveInteger } = require("../utils/input");
 
 const companyController = {
   // [GET] Lấy danh sách filter động
@@ -38,13 +40,13 @@ const companyController = {
         query.$or = [
           {
             companyName: {
-              $regex: keyword,
+              $regex: escapeRegex(keyword),
               $options: "i",
             },
           },
           {
             industry: {
-              $regex: keyword,
+              $regex: escapeRegex(keyword),
               $options: "i",
             },
           },
@@ -58,20 +60,20 @@ const companyController = {
 
       if (location) {
         query.location = {
-          $regex: location,
+          $regex: escapeRegex(location),
           $options: "i",
         };
       }
 
       // PAGINATION
-      const pageNumber = parseInt(page);
-      const limitNumber = parseInt(limit);
+      const pageNumber = positiveInteger(page, 1, 100000);
+      const limitNumber = positiveInteger(limit, 12);
 
       const skip = (pageNumber - 1) * limitNumber;
 
       // QUERY
       const [companiesDb, total] = await Promise.all([
-        Employer.find(query)
+        Employer.find(query).select(PUBLIC_COMPANY_FIELDS)
           .sort({ createdAt: -1 })
           .skip(skip)
           .limit(limitNumber)
@@ -81,7 +83,8 @@ const companyController = {
       ]);
 
       // FORMAT
-      const formattedCompanies = companiesDb.map((c) => ({
+      const countedCompanies = await withCompanyJobCounts(companiesDb);
+      const formattedCompanies = countedCompanies.map((c) => ({
         ...c,
         id: c._id,
         name: c.companyName,
@@ -109,7 +112,7 @@ const companyController = {
     try {
       const { id } = req.params;
 
-      const company = await Employer.findById(id).lean();
+      const company = await Employer.findById(id).select(PUBLIC_COMPANY_FIELDS).lean();
 
       if (!company) {
         return res.status(404).json({
@@ -120,7 +123,9 @@ const companyController = {
       // FORMAT
       company.id = company._id;
       company.name = company.companyName;
-      company.jobs = company.totalJobs;
+      const [counted] = await withCompanyJobCounts([company]);
+      company.totalJobs = counted.totalJobs;
+      company.jobs = counted.totalJobs;
 
       res.status(200).json(company);
     } catch (error) {

@@ -17,13 +17,11 @@ import {
 import { useAuth } from "../hooks/useAuth";
 import "./AuthPages.css";
 import { useGoogleLogin } from "@react-oauth/google";
-import axios from "axios";
-import apiClient from "../services/api";
 
 const LoginPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { login } = useAuth();
+  const { login, loginWithGoogle: authenticateGoogle } = useAuth();
   const [loading, setLoading] = useState(false);
   const [form] = Form.useForm();
 
@@ -62,14 +60,7 @@ const LoginPage = () => {
         });
 
         // Gọi xuống API Backend của bạn để đổi Code lấy Token
-        const res = await apiClient.post("/auth/google", {
-          code: codeResponse.code,
-        });
-
-        // Backend trả về JWT của hệ thống, lưu vào localStorage
-        const systemToken = res.data.token;
-        const userData = res.data.user;
-        localStorage.setItem("token", systemToken);
+        const userData = await authenticateGoogle(codeResponse.code);
 
         message.success({
           content: "Đăng nhập Google thành công!",
@@ -83,7 +74,7 @@ const LoginPage = () => {
         const targetPath =
           fromPath && fromPath !== "/" ? fromPath : defaultPath;
 
-        window.location.href = targetPath;
+        navigate(targetPath, { replace: true });
       } catch (err) {
         console.error(err);
         message.error({

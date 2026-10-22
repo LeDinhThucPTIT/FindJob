@@ -1,9 +1,11 @@
+import { APPLICATION_STATUS_LABELS } from "../constants/applicationStatus";
+import { useNavigate } from "react-router-dom";
 // ==========================================
 // pages/ProfilePage.jsx
 // Trang hồ sơ ứng viên
 // ==========================================
 
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   Row,
   Col,
@@ -109,7 +111,8 @@ const ProfileCompletion = ({ user }) => {
 };
 
 const ProfilePage = () => {
-  const { user, updateUser } = useAuth();
+  const { user, updateUser, clearSession } = useAuth();
+  const navigate = useNavigate();
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [pwdModalOpen, setPwdModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -122,6 +125,30 @@ const ProfilePage = () => {
   // chúng ta rút thẳng mảng ra từ đối tượng user, tránh dùng hàm .filter bừa bãi gây lỗi.
   const appliedJobs = user?.appliedJobs || [];
   const savedJobs = user?.savedJobs || [];
+  useEffect(() => {
+    if (user?.role !== "candidate") return;
+    let active = true;
+    let refreshing = false;
+    const refresh = async () => {
+      if (document.hidden || refreshing) return;
+      refreshing = true;
+      try {
+        const data = await authService.getProfile();
+        if (active && data.user) updateUser({ appliedJobs: data.user.appliedJobs, savedJobs: data.user.savedJobs });
+      } catch { /* Keep the last confirmed profile during network errors. */ }
+      finally { refreshing = false; }
+    };
+    refresh();
+    const timer = setInterval(refresh, 30000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      active = false;
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [user?._id, user?.id, user?.role, updateUser]);
 
   const handleEditProfile = () => {
     form.setFieldsValue({
@@ -157,9 +184,11 @@ const ProfilePage = () => {
     setSaving(true);
     try {
       await authService.changePassword(values);
-      message.success("Đổi mật khẩu thành công!");
+      message.success("Đổi mật khẩu thành công. Vui lòng đăng nhập lại.");
       setPwdModalOpen(false);
       pwdForm.resetFields();
+      clearSession();
+      navigate("/login", { replace: true });
     } catch (err) {
       message.error(err.message || "Đổi mật khẩu thất bại");
     } finally {
@@ -479,13 +508,13 @@ const ProfilePage = () => {
                             }}
                           >
                             <span className="applied-status-badge applied-status-badge--pending">
-                              <ClockCircleOutlined /> Đang chờ xét duyệt
+                              <ClockCircleOutlined /> {APPLICATION_STATUS_LABELS[job.applicationStatus] || "Đã gửi hồ sơ"}
                             </span>
                             <span
                               className="applied-date"
                               style={{ color: "#8c8c8c" }}
                             >
-                              Trạng thái: Realtime từ Hệ thống
+                              {job.appliedAt ? `Ngày ứng tuyển: ${new Date(job.appliedAt).toLocaleDateString("vi-VN")}` : ""}
                             </span>
                           </div>
                         </div>
@@ -684,13 +713,13 @@ const ProfilePage = () => {
             label="Mật khẩu mới"
             rules={[
               { required: true, message: "Vui lòng nhập mật khẩu mới!" },
-              { min: 6, message: "Mật khẩu phải dài tối thiểu 6 ký tự!" },
+              { min: 8, max: 128, message: "Mật khẩu phải có 8–128 ký tự!" },
             ]}
           >
             <Input.Password
               size="large"
               prefix={<LockOutlined />}
-              placeholder="Tối thiểu 6 ký tự"
+              placeholder="Tối thiểu 8 ký tự"
             />
           </Form.Item>
           <Form.Item

@@ -33,6 +33,9 @@ const ProtectedRoute = ({ children, requiredRole }) => {
   if (requiredRole === "employer" && !isEmployer) {
     return <Navigate to="/become-employer" replace />;
   }
+  if (requiredRole === "candidate" && user?.role !== "candidate") {
+    return <Navigate to="/employer/dashboard" replace />;
+  }
 
   return children;
 };

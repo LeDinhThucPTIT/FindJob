@@ -139,6 +139,7 @@ const ForgotPassPage = () => {
               label="Mật khẩu mới"
               rules={[
                 { required: true, message: "Vui lòng nhập mật khẩu mới" },
+                { min: 8, max: 128, message: "Mật khẩu phải có 8–128 ký tự" },
               ]}
             >
               <Input.Password

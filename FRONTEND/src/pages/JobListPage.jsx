@@ -3,9 +3,9 @@
 // Trang danh sách việc làm + filter
 // ===========================
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Row, Col, Pagination, Spin, Empty, Input, Select, Button, Tag } from 'antd';
+import { Row, Col, Pagination, Spin, Empty, Input, Select, Button, Tag, Alert } from 'antd';
 import { SearchOutlined, SortAscendingOutlined } from '@ant-design/icons';
 import JobCard from '../components/job/JobCard';
 import JobFilter from '../components/job/JobFilter';
@@ -26,60 +26,42 @@ const JobListPage = () => {
   const [jobs, setJobs] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState(1);
-  const [sort, setSort] = useState('newest');
+  const [error, setError] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const page = Math.min(100000, Math.max(1, Math.floor(Number(searchParams.get('page'))) || 1));
+  const sort = searchParams.get('sort') || 'newest';
   const [keyword, setKeyword] = useState(searchParams.get('keyword') || '');
-  const [filters, setFilters] = useState({
-    location: searchParams.get('location') || '',
-    category: searchParams.get('category') || '',
-    experience: '',
-    salary: '',
-    jobType: '',
-  });
-
-  const fetchJobs = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await jobService.getJobs({
-        keyword,
-        ...filters,
-        page,
-        limit: 6,
-      });
-      setJobs(result.data);
-      setTotal(result.total);
-    } finally {
-      setLoading(false);
-    }
-  }, [keyword, filters, page]);
-
+  const filters = Object.fromEntries(['location', 'category', 'experience', 'salary', 'jobType'].map((key) => [key, searchParams.get(key) || '']));
+  useEffect(() => { setKeyword(searchParams.get('keyword') || ''); }, [searchParams]);
+  const updateQuery = (updates) => {
+    const next = new URLSearchParams(searchParams);
+    Object.entries(updates).forEach(([key, value]) => value ? next.set(key, String(value)) : next.delete(key));
+    setSearchParams(next);
+  };
   useEffect(() => {
-    fetchJobs();
-  }, [fetchJobs]);
-
-  const handleSearch = () => {
-    setPage(1);
-    fetchJobs();
-  };
-
-  const handleFilterChange = (newFilters) => {
-    setFilters(newFilters);
-    setPage(1);
-  };
-
-  const handleResetFilter = () => {
-    setFilters({ location: '', category: '', experience: '', salary: '', jobType: '' });
-    setKeyword('');
-    setPage(1);
-  };
+    const request = new AbortController();
+    setLoading(true);
+    setError(false);
+    jobService.getJobs({ ...Object.fromEntries(searchParams), page, limit: 6 }, request.signal)
+      .then((result) => {
+        if (request.signal.aborted) return;
+        if (!Array.isArray(result.data) || !Number.isFinite(result.total)) throw new Error('Invalid jobs response');
+        setJobs(result.data);
+        setTotal(result.total);
+      }).catch(() => {
+        if (!request.signal.aborted) { setError(true); setJobs([]); setTotal(0); }
+      }).finally(() => { if (!request.signal.aborted) setLoading(false); });
+    return () => request.abort();
+  }, [searchParams, page, retry]);
+  const handleSearch = () => updateQuery({ keyword: keyword.trim(), page: 1 });
+  const handleFilterChange = (values) => updateQuery({ ...values, page: 1 });
+  const handleResetFilter = () => { setKeyword(''); setSearchParams({}); };
 
   const activeFilterTags = Object.entries(filters)
     .filter(([, v]) => v)
     .map(([k, v]) => ({ key: k, value: v }));
 
-  const removeFilter = (key) => {
-    setFilters((prev) => ({ ...prev, [key]: '' }));
-  };
+  const removeFilter = (key) => updateQuery({ [key]: '', page: 1 });
 
   return (
     <div className="job-list-page">
@@ -116,7 +98,7 @@ const JobListPage = () => {
       <div className="container">
         <Row gutter={[24, 0]} className="job-list-layout">
           {/* Sidebar filter */}
-          <Col xs={0} sm={0} md={7} lg={6}>
+          <Col xs={24} md={7} lg={6} className="job-list-filters">
             <JobFilter
               filters={filters}
               onChange={handleFilterChange}
@@ -134,7 +116,7 @@ const JobListPage = () => {
                 ) : (
                   <span className="job-list-count">
                     Tìm thấy <strong>{total}</strong> việc làm
-                    {keyword && <span> cho "<em>{keyword}</em>"</span>}
+                    {searchParams.get('keyword') && <span> cho "<em>{searchParams.get('keyword')}</em>"</span>}
                   </span>
                 )}
                 {/* Active filter tags */}
@@ -156,7 +138,7 @@ const JobListPage = () => {
                 <SortAscendingOutlined style={{ color: '#6b7280' }} />
                 <Select
                   value={sort}
-                  onChange={setSort}
+                  onChange={(value) => updateQuery({ sort: value, page: 1 })}
                   bordered={false}
                   style={{ minWidth: 140 }}
                   size="small"
@@ -173,6 +155,8 @@ const JobListPage = () => {
               <div className="job-list-loading">
                 <Spin size="large" />
               </div>
+            ) : error ? (
+              <Alert type="error" showIcon message="Không tải được việc làm. Vui lòng thử lại." action={<Button onClick={() => setRetry((value) => value + 1)}>Thử lại</Button>} />
             ) : jobs.length === 0 ? (
               <div className="job-list-empty">
                 <Empty
@@ -188,7 +172,7 @@ const JobListPage = () => {
               <>
                 <Row gutter={[16, 16]}>
                   {jobs.map((job) => (
-                    <Col key={job.id} xs={24} sm={12} xl={12}>
+                    <Col key={job._id || job.id} xs={24} sm={12} xl={12}>
                       <JobCard job={job} />
                     </Col>
                   ))}
@@ -198,7 +182,7 @@ const JobListPage = () => {
                     current={page}
                     total={total}
                     pageSize={6}
-                    onChange={(p) => { setPage(p); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                    onChange={(p) => { updateQuery({ page: p }); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
                     showSizeChanger={false}
                     showTotal={(total) => `Tổng ${total} việc làm`}
                   />

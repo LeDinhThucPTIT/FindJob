@@ -25,16 +25,12 @@ const footerLinks = {
   ],
   employers: [
     { label: 'Đăng tin tuyển dụng', to: '/employer/dashboard' },
-    { label: 'Tìm hồ sơ ứng viên', to: '/employer/candidates' },
+    { label: 'Hồ sơ ứng viên', to: '/employer/dashboard?tab=applications' },
     { label: 'Quản lý tin đăng', to: '/employer/dashboard' },
-    { label: 'Bảng giá dịch vụ', to: '/pricing' },
   ],
   about: [
-    { label: 'Về chúng tôi', to: '/about' },
-    { label: 'Blog nghề nghiệp', to: '/blog' },
-    { label: 'Điều khoản dịch vụ', to: '/terms' },
-    { label: 'Chính sách bảo mật', to: '/privacy' },
-    { label: 'Liên hệ', to: '/contact' },
+    { label: 'Khám phá công ty', to: '/companies' },
+    { label: 'Chấm điểm CV bằng AI', to: '/cvscoring' },
   ],
 };
 
@@ -43,7 +39,7 @@ const AppFooter = () => {
     <footer className="app-footer">
       <div className="container">
         <div className="app-footer__top">
-          <Row gutter={[48, 40]}>
+          <Row gutter={[{ xs: 16, sm: 24, md: 48 }, 40]}>
             {/* Brand */}
             <Col xs={24} sm={24} md={8} lg={7}>
               <div className="footer-brand">

@@ -9,6 +9,7 @@ function route(app) {
   app.use("/employer", employerRoutes);
   app.use("/companies", companyRoutes);
   app.use("/cvs", cvRoutes);
+  app.use("/notifications", require("./notificationRoutes"));
 }
 
 module.exports = route;

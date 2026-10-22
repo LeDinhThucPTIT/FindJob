@@ -4,10 +4,9 @@
 
 import React, { useState, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
-import { Button, Dropdown, Avatar, Badge } from "antd";
+import { Button, Dropdown, Avatar } from "antd";
 import {
   UserOutlined,
-  BellOutlined,
   MenuOutlined,
   CloseOutlined,
   CaretDownOutlined,
@@ -17,6 +16,7 @@ import {
   BookOutlined,
 } from "@ant-design/icons";
 import { useAuth } from "../../hooks/useAuth";
+import NotificationBell from "./NotificationBell";
 import "./AppHeader.css";
 
 const AppHeader = () => {
@@ -111,11 +111,7 @@ const AppHeader = () => {
         <div className="app-header__actions">
           {isAuthenticated ? (
             <>
-              <Badge count={3} size="small">
-                <button className="app-header__icon-btn">
-                  <BellOutlined />
-                </button>
-              </Badge>
+              <NotificationBell />
               <Dropdown
                 menu={{ items: userMenuItems }}
                 placement="bottomRight"
