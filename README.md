@@ -37,6 +37,18 @@ Hai vai trò dùng đăng nhập mật khẩu hoặc Google OAuth. Khôi phục 
 
 ## Cài đặt và chạy
 
+### Lệnh từ thư mục gốc
+
+```powershell
+npm run setup             # Cài đúng lockfile cho backend và frontend
+npm run dev:backend       # Terminal 1, sau khi cấu hình .env
+npm run dev:frontend      # Terminal 2
+npm run check             # Unit + integration + build
+npm run test:browser      # Chạy sau khi build; cần Chrome/Edge
+```
+
+Xem [hướng dẫn demo và mô tả dùng cho CV](docs/PORTFOLIO.md).
+
 ### Yêu cầu
 
 - **Node.js 22.13 trở lên trong nhánh 22 LTS**, npm và MongoDB local hoặc MongoDB Atlas.

@@ -1,0 +1,17 @@
+{
+  "name": "topcv-portfolio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Full-stack recruitment platform with CV management and AI-assisted CV review",
+  "engines": { "node": ">=22.13.0 <23" },
+  "scripts": {
+    "setup": "npm ci --prefix BACKEND && npm ci --prefix FRONTEND",
+    "dev:backend": "npm run dev --prefix BACKEND",
+    "dev:frontend": "npm run dev --prefix FRONTEND",
+    "test": "npm test --prefix BACKEND",
+    "test:integration": "npm run test:integration --prefix BACKEND",
+    "test:browser": "npm run test:browser --prefix BACKEND",
+    "build": "npm run build --prefix FRONTEND",
+    "check": "npm test && npm run test:integration && npm run build"
+  }
+}
